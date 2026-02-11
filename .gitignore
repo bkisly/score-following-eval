@@ -1,0 +1,146 @@
+# Python Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+checkpoints/
+saved_models/
+model_weights/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+jupyter_notebook_config.py
+
+# Data Files
+data/maestro/
+data/custom/
+*.wav
+*.mp3
+*.mid
+*.midi
+*.flac
+*.ogg
+
+# Results and Logs
+results/
+logs/
+experiments/logs/
+*.log
+*.csv
+*.json
+!requirements.txt
+
+# Plots and Figures
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+!figures/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+pytest_cache/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+tmp/
+temp/
+
+# OS specific
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Compressed files (except the distribution zip)
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Large model files
+*.h5
+*.pkl
+*.pickle
+*.joblib
+
+# Cache directories
+.cache/
+cache/
+
+# Profiling
+*.prof
+*.lprof
+
+# Documentation build
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Exclude example data but keep directory structure
+data/**
+!data/.gitkeep
+!data/README.md
+
+# Exclude results but keep directory structure  
+results/**
+!results/.gitkeep
+!results/README.md
