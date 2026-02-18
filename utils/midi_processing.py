@@ -1,10 +1,12 @@
 """
 Narzędzia do przetwarzania plików MIDI.
+WERSJA BEZ FLUIDSYNTH - dla kompatybilności z Windows
 """
 
 import numpy as np
 import pretty_midi
 from typing import Tuple, List, Optional
+import warnings
 
 
 class MIDIProcessor:
@@ -120,17 +122,36 @@ class MIDIProcessor:
                         midi: pretty_midi.PrettyMIDI,
                         fs: int = 22050) -> np.ndarray:
         """
-        Syntetyzuje audio z MIDI (przydatne do generowania danych testowych).
+        Syntetyzuje audio z MIDI.
+        
+        UWAGA: FluidSynth nie jest dostępny na Windows bez dodatkowej instalacji.
+        Ta metoda zwróci ostrzeżenie i zerowe audio jako fallback.
         
         Args:
             midi: Obiekt PrettyMIDI
             fs: Sample rate
             
         Returns:
-            Sygnał audio [n_samples]
+            Sygnał audio [n_samples] lub zera jeśli FluidSynth niedostępny
         """
-        audio = midi.fluidsynth(fs=fs)
-        return audio
+        try:
+            # Spróbuj użyć FluidSynth jeśli dostępny
+            audio = midi.fluidsynth(fs=fs)
+            return audio
+        except Exception as e:
+            # Fallback - zwróć ciszę odpowiedniej długości
+            warnings.warn(
+                f"FluidSynth nie jest dostępny: {e}\n"
+                "Zwracam ciszę zamiast syntetycznego audio.\n"
+                "Aby używać syntezy audio:\n"
+                "1. Windows: Zainstaluj FluidSynth z https://github.com/FluidSynth/fluidsynth/releases\n"
+                "2. Linux: sudo apt-get install fluidsynth\n"
+                "3. Mac: brew install fluid-synth\n"
+                "Alternatywnie użyj prawdziwych nagrań audio zamiast syntezy."
+            )
+            duration = midi.get_end_time()
+            silence = np.zeros(int(duration * fs))
+            return silence
     
     def extract_chroma_from_midi(self, 
                                 midi: pretty_midi.PrettyMIDI,
@@ -231,17 +252,3 @@ def align_audio_midi(audio_duration: float,
     """
     # Liniowe mapowanie
     return np.linspace(0, midi_duration, n_frames)
-
-
-# Przykładowe użycie
-if __name__ == "__main__":
-    processor = MIDIProcessor(fps=100)
-    
-    # Przykład (zakomentowane - wymaga pliku MIDI)
-    # midi = processor.load_midi("example.mid")
-    # piano_roll = processor.midi_to_piano_roll(midi)
-    # chroma = processor.extract_chroma_from_midi(midi)
-    # duration = processor.get_duration(midi)
-    
-    print("MIDIProcessor ready to use!")
-    print(f"Default FPS: {processor.fps}")

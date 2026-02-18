@@ -7,16 +7,18 @@ Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 from models.dtw_model import DTWModel, OnlineTimeWarping
 from evaluation.evaluator import Evaluator
 
+# KROK 1: Ustaw ścieżki do swoich plików
+# ZMIEŃ TE ŚCIEŻKI NA SWOJE!
+
+MAESTRO_PATH = "C:\\Users\\bkisl\\Desktop\\maestro-v3.0.0\\maestro-v3.0.0\\2018\\"
+
+AUDIO_FILE = f"{MAESTRO_PATH}MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
+MIDI_FILE = f"{MAESTRO_PATH}MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
 
 def main():
     print("=" * 70)
     print("QUICKSTART - Platforma Ewaluacji Śledzenia Partytury")
     print("=" * 70)
-    
-    # KROK 1: Ustaw ścieżki do swoich plików
-    # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
-    AUDIO_FILE = "path/to/your/audio.wav"
-    MIDI_FILE = "path/to/your/reference.mid"
     
     # KROK 2: Stwórz modele
     print("\n[1/3] Creating models...")
@@ -33,7 +35,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[dtw, otw],
+        models=[otw],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
@@ -61,8 +63,8 @@ if __name__ == "__main__":
         print("ERROR: File not found!")
         print("!" * 70)
         print("\nPlease edit this file and set correct paths:")
-        print("  - AUDIO_FILE = 'path/to/your/audio.wav'")
-        print("  - MIDI_FILE = 'path/to/your/reference.mid'")
+        print(f"  - AUDIO_FILE = '{AUDIO_FILE}'")
+        print(f"  - MIDI_FILE = '{MIDI_FILE}'")
         print("\nYou can:")
         print("  1. Use files from MAESTRO dataset")
         print("  2. Create synthetic audio from MIDI (see GUIDE.md)")
