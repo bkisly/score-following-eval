@@ -4,16 +4,16 @@ QUICKSTART - Najprostszy możliwy przykład użycia platformy
 Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 """
 
-from models.dtw_model import DTWModel, OnlineTimeWarping
+from models.dtw_model import OTWModel
 from evaluation.evaluator import Evaluator
 
 # KROK 1: Ustaw ścieżki do swoich plików
 # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
 
-MAESTRO_PATH = "C:\\Users\\bkisl\\Desktop\\maestro-v3.0.0\\maestro-v3.0.0\\2018\\"
+BASE_PATH = "C:\\Users\\bkisl\\Desktop\\"
 
-AUDIO_FILE = f"{MAESTRO_PATH}MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
-MIDI_FILE = f"{MAESTRO_PATH}MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
+AUDIO_FILE = f"{BASE_PATH}Chopin - Nocturne op.9 No.2.mp3"
+MIDI_FILE = f"{BASE_PATH}chno0902.mid"
 
 def main():
     print("=" * 70)
@@ -22,9 +22,7 @@ def main():
     
     # KROK 2: Stwórz modele
     print("\n[1/3] Creating models...")
-    dtw = DTWModel(window_size=100)
-    otw = OnlineTimeWarping(window_size=100, search_margin=30)
-    print(f"  ✓ Created {dtw.name}")
+    otw = OTWModel(window_size=100, search_margin=30)
     print(f"  ✓ Created {otw.name}")
     
     # KROK 3: Stwórz ewaluator

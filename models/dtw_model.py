@@ -1,292 +1,288 @@
 """
-Implementacja modelu DTW/OTW (Online Time Warping) jako baseline.
-Ten model nie wymaga treningu i może działać od razu.
-"""
+OTW (Online Time Warping) score follower — binding to the ConcertCue algorithm.
 
-import numpy as np
-from typing import Dict, Any
-from scipy.spatial.distance import euclidean
-from fastdtw import fastdtw
-import librosa
+Replaces the placeholder fastdtw-based implementation with the actual
+streaming OTW algorithm from models/otw/ (Simon Dixon 2005, adapted by
+Caren & Egozy for the web-score-following / ConcertCue project, WAC 2024).
+
+Default algorithm parameters are the tuned values from the paper
+(found via grid search on 18 concert recordings):
+
+    sample_rate    = 44100 Hz
+    n_fft          = 8192 samples
+    ref_hop_len    = 4096 samples
+    live_hop_len   = 3686 samples  (~90 % of ref hop)
+    OTW c          = 300           (search window width)
+    max_run_count  = 3
+    diag_weight    = 0.4           (lower → less prone to getting stuck)
+
+Reported benchmark (simulated Python, Table 1 in paper):
+    median error  0.077 s  |  95th pct  0.537 s  |  mean error  0.130 s
+"""
 
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import time
+import types
+from typing import Dict, Any, Optional
+
+import numpy as np
+import librosa
+
+# ---------------------------------------------------------------------------
+# Pyodide / browser-API guard
+#
+# models/otw/file_utils.py has a top-level  "from js import Blob, document, window"
+# (Pyodide browser API).  The package __init__.py re-exports everything from that
+# module, so importing *any* symbol from models.otw would fail on desktop Python.
+# We inject a lightweight mock into sys.modules before the first import so that
+# Python resolves the name without error.  save_from_browser() — the only
+# function that actually uses those objects — is never called in this binding.
+# ---------------------------------------------------------------------------
+if "js" not in sys.modules:
+    _js_mock = types.ModuleType("js")
+    _js_mock.Blob = None
+    _js_mock.document = None
+    _js_mock.window = None
+    sys.modules["js"] = _js_mock
+
+# Add the project root to sys.path so that "models.*" package imports resolve.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from models.base_model import BaseScoreFollower
-from utils.audio_processing import AudioProcessor
-from utils.midi_processing import MIDIProcessor
+from models.otw.otw import OTW
+from models.otw.features import ChromaMaker, audio_to_np_cens
 
 
-class DTWModel(BaseScoreFollower):
+class OTWModel(BaseScoreFollower):
     """
-    Model bazujący na Dynamic Time Warping.
-    
-    Algorytm:
-    1. Ekstrahuj chromagram z referencyjnego MIDI
-    2. Dla każdej ramki audio:
-       - Ekstrahuj chromagram z okna audio
-       - Dopasuj do referencji używając DTW
-       - Zwróć najlepsze dopasowanie jako pozycję
+    Score follower using Online Time Warping (OTW).
+
+    Algorithm (streaming, O(n) time and space):
+      1.  Load reference audio → extract CENS features (12-dim per frame).
+      2.  For each live audio chunk:
+          a.  Resample to self.sr if necessary.
+          b.  Accumulate in a rolling buffer.
+          c.  For every full live-hop window in the buffer, extract one CENS
+              vector via ChromaMaker and call OTW.insert().
+          d.  Convert the returned reference frame index to seconds and store
+              it as current_position.
     """
-    
-    def __init__(self, 
-                 window_size: int = 100,
-                 hop_length: int = 512,
-                 feature_type: str = 'chroma'):
-        """
-        Args:
-            window_size: Rozmiar okna w ramkach (dla OTW)
-            hop_length: Przesunięcie między ramkami
-            feature_type: 'chroma' lub 'mfcc' lub 'mel'
-        """
-        super().__init__(name="DTW-OTW")
-        
-        self.window_size = window_size
-        self.hop_length = hop_length
-        self.feature_type = feature_type
-        
-        # Procesory
-        self.audio_processor = AudioProcessor(hop_length=hop_length)
-        self.midi_processor = MIDIProcessor()
-        
-        # Stan
-        self.reference_features = None
-        self.reference_times = None
-        self.audio_buffer = []  # Bufor dla okna czasowego
-        
+
+    # Paper-tuned defaults (kept as class-level constants for readability)
+    _SR            = 44100
+    _N_FFT         = 8192
+    _REF_HOP_LEN   = 4096
+    _LIVE_HOP_LEN  = 3686   # ~90 % of ref hop — important per paper
+    _C             = 300
+    _MAX_RUN_COUNT = 3
+    _DIAG_WEIGHT   = 0.4
+
+    def __init__(
+        self,
+        sr: int            = _SR,
+        n_fft: int         = _N_FFT,
+        ref_hop_len: int   = _REF_HOP_LEN,
+        live_hop_len: int  = _LIVE_HOP_LEN,
+        c: int             = _C,
+        max_run_count: int = _MAX_RUN_COUNT,
+        diag_weight: float = _DIAG_WEIGHT,
+    ):
+        super().__init__(name="OTW-ConcertCue")
+
+        self.sr           = sr
+        self.n_fft        = n_fft
+        self.ref_hop_len  = ref_hop_len
+        self.live_hop_len = live_hop_len
+        self._otw_params  = {
+            "c":             c,
+            "max_run_count": max_run_count,
+            "diag_weight":   diag_weight,
+        }
+
+        # Populated by load_reference()
+        self._ref_cens:    Optional[np.ndarray] = None   # shape [12, N_ref]
+        self._n_ref_frames: int   = 0
+        self._ref_duration: float = 0.0
+
+        # Runtime state — (re-)created by _init_runtime_state()
+        self._otw:          Optional[OTW]         = None
+        self._chroma_maker: Optional[ChromaMaker] = None
+        self._buf:          np.ndarray            = np.empty(0, dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # BaseScoreFollower interface
+    # ------------------------------------------------------------------
+
     def load_reference(self, reference_path: str) -> None:
         """
-        Wczytuje MIDI referencyjny i ekstrahuje features.
-        
-        Args:
-            reference_path: Ścieżka do pliku MIDI
+        Load a reference audio (WAV / MP3 / FLAC) or MIDI file.
+
+        Extracts CENS features at self.sr using the same ChromaMaker that
+        will be used for live audio, then initialises the OTW cost matrix.
         """
-        print(f"Loading reference MIDI: {reference_path}")
-        
-        # Wczytaj MIDI
-        midi = self.midi_processor.load_midi(reference_path)
-        
-        # Syntetyzuj audio z MIDI (żeby mieć wspólną reprezentację)
-        reference_audio = self.midi_processor.synthesize_audio(midi, fs=22050)
-        
-        # Ekstrahuj features
-        if self.feature_type == 'chroma':
-            self.reference_features = self.audio_processor.compute_chroma(reference_audio)
-        elif self.feature_type == 'mfcc':
-            self.reference_features = self.audio_processor.compute_mfcc(reference_audio)
-        elif self.feature_type == 'mel':
-            self.reference_features = self.audio_processor.compute_spectrogram(reference_audio)
-        else:
-            raise ValueError(f"Unknown feature type: {self.feature_type}")
-        
-        # Zapisz timing
-        n_frames = self.reference_features.shape[1]
-        self.reference_times = np.arange(n_frames) * self.hop_length / 22050
-        
-        print(f"Reference loaded: {n_frames} frames, duration: {self.reference_times[-1]:.2f}s")
-        
-        self.reference_score = reference_audio  # Zapisz dla zgodności z API
-    
-    def _extract_features_from_frame(self, audio_frame: np.ndarray) -> np.ndarray:
-        """
-        Ekstrahuje features z pojedynczej ramki audio.
-        
-        Args:
-            audio_frame: Fragment audio
-            
-        Returns:
-            Feature vector
-        """
-        # Dodaj do bufora
-        self.audio_buffer.append(audio_frame)
-        
-        # Utrzymuj rozmiar bufora
-        if len(self.audio_buffer) > self.window_size:
-            self.audio_buffer.pop(0)
-        
-        # Połącz bufor w jeden sygnał
-        window_audio = np.concatenate(self.audio_buffer)
-        
-        # Ekstrahuj features
-        if self.feature_type == 'chroma':
-            features = self.audio_processor.compute_chroma(window_audio)
-        elif self.feature_type == 'mfcc':
-            features = self.audio_processor.compute_mfcc(window_audio)
-        elif self.feature_type == 'mel':
-            features = self.audio_processor.compute_spectrogram(window_audio)
-        
-        return features
-    
-    def process_frame(self, 
-                     audio_frame: np.ndarray,
-                     sample_rate: int) -> Dict[str, Any]:
-        """
-        Przetwarza pojedynczą ramkę używając Online Time Warping.
-        
-        Args:
-            audio_frame: Fragment audio
-            sample_rate: Sample rate
-            
-        Returns:
-            Dict z predykcją pozycji
-        """
-        import time
-        start_time = time.time()
-        
-        if self.reference_features is None:
-            raise ValueError("Reference not loaded! Call load_reference() first.")
-        
-        # Ekstrahuj features z okna
-        query_features = self._extract_features_from_frame(audio_frame)
-        
-        # DTW alignment
-        # Używamy fastdtw dla szybkości
-        distance, path = fastdtw(
-            query_features.T,  # [time, features]
-            self.reference_features.T,
-            dist=euclidean
+        print(f"[OTWModel] Loading reference: {reference_path}")
+
+        audio = self._load_audio(reference_path)
+
+        self._ref_cens      = audio_to_np_cens(audio, self.sr, self.n_fft, self.ref_hop_len)
+        self._n_ref_frames  = self._ref_cens.shape[1]
+        self._ref_duration  = self._n_ref_frames * self.ref_hop_len / self.sr
+        self.reference_score = reference_path
+
+        self._init_runtime_state()
+
+        print(
+            f"[OTWModel] Reference loaded: {self._n_ref_frames} frames, "
+            f"duration: {self._ref_duration:.2f}s"
         )
-        
-        # Znajdź najlepsze dopasowanie
-        # path to lista krotek (query_idx, ref_idx)
-        if len(path) > 0:
-            # Weź ostatni punkt dopasowania jako aktualną pozycję
-            _, ref_idx = path[-1]
-            predicted_time = self.reference_times[min(ref_idx, len(self.reference_times)-1)]
-            
-            # Aktualizuj pozycję
-            self.current_position = predicted_time
-            
-            # Oblicz confidence (im mniejsza odległość, tym lepiej)
-            # Znormalizuj do [0, 1]
-            max_distance = np.sqrt(query_features.shape[0] * query_features.shape[1])
-            confidence = max(0, 1 - distance / max_distance)
-        else:
-            predicted_time = self.current_position
-            confidence = 0.0
-        
-        # Oblicz latencję
-        latency = (time.time() - start_time) * 1000  # ms
-        
-        # Estymuj tempo (uproszczone - zwróć stałe tempo)
-        tempo = 120.0  # BPM - można to ulepszyć
-        
+
+    def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
+        """
+        Accept one chunk of live audio and advance the OTW alignment.
+
+        The chunk may arrive at any sample rate; it is resampled to self.sr
+        internally.  Each call may execute 0 or more OTW steps depending on
+        how many full live-hop windows have accumulated in the buffer.
+
+        Returns a dict with keys: position (s), confidence [0,1], tempo (BPM),
+        latency (ms).
+        """
+        t0 = time.time()
+
+        if self._otw is None or self._ref_cens is None:
+            raise RuntimeError("Reference not loaded. Call load_reference() first.")
+
+        # Resample to OTW internal rate if necessary
+        chunk = audio_frame.astype(np.float32)
+        if sample_rate != self.sr:
+            chunk = librosa.resample(chunk, orig_sr=sample_rate, target_sr=self.sr)
+
+        # Accumulate into the rolling buffer
+        self._buf = np.concatenate([self._buf, chunk])
+
+        # Process every full live-hop window available in the buffer.
+        # Each window is n_fft samples wide; consecutive windows overlap by
+        # (n_fft - live_hop_len) samples — matching the reference extraction.
+        while len(self._buf) >= self.n_fft:
+            window  = self._buf[: self.n_fft]
+            cens    = self._chroma_maker.insert(window)
+            ref_idx = self._otw.insert(cens)
+
+            # Convert reference frame index → seconds
+            self.current_position = ref_idx * self.ref_hop_len / self.sr
+
+            # Slide buffer forward by one live hop
+            self._buf = self._buf[self.live_hop_len :]
+
+        latency = (time.time() - t0) * 1000  # ms
+
         return {
-            'position': predicted_time,
-            'confidence': confidence,
-            'tempo': tempo,
-            'latency': latency
+            "position":   float(self.current_position),
+            "confidence": self._confidence(),
+            "tempo":      0.0,
+            "latency":    latency,
         }
-    
+
     def reset(self) -> None:
-        """
-        Resetuje stan modelu.
-        """
-        self.current_position = 0
-        self.audio_buffer = []
-        print("DTW model reset.")
-    
+        """Reset alignment state for a new piece.  Reference CENS is kept."""
+        self.current_position = 0.0
+        if self._ref_cens is not None:
+            self._init_runtime_state()
+        print("[OTWModel] Reset.")
+
     def requires_training(self) -> bool:
-        """
-        DTW nie wymaga treningu.
-        """
         return False
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-class OnlineTimeWarping(DTWModel):
-    """
-    Wariant Online Time Warping z dodatkowymi optymalizacjami.
-    
-    Różnice od zwykłego DTW:
-    - Analizuje tylko okno czasowe zamiast całego utworu
-    - Używa kontekstu z poprzednich ramek
-    - Szybsze dla real-time processing
-    """
-    
-    def __init__(self, 
-                 window_size: int = 100,
-                 search_margin: int = 50,
-                 **kwargs):
+    def _init_runtime_state(self) -> None:
+        """Create a fresh OTW engine and ChromaMaker for a new alignment run."""
+        self._otw          = OTW(self._ref_cens, self._otw_params)
+        self._chroma_maker = ChromaMaker(self.sr, self.n_fft)
+        self._buf          = np.empty(0, dtype=np.float32)
+
+    def _confidence(self) -> float:
         """
-        Args:
-            window_size: Rozmiar okna audio
-            search_margin: Margines wyszukiwania wokół ostatniej pozycji
+        Cosine similarity between the current reference and live CENS vectors.
+
+        Both vectors are L2-normalised (guaranteed by ChromaMaker), so the dot
+        product gives a value in [0, 1] that reflects how well the live audio
+        matches the reference at the estimated position.
+        Returns 0.0 before any frame has been processed.
         """
-        super().__init__(window_size=window_size, **kwargs)
-        self.name = "OTW (Online Time Warping)"
-        self.search_margin = search_margin
-        
-    def process_frame(self,
-                     audio_frame: np.ndarray,
-                     sample_rate: int) -> Dict[str, Any]:
+        if self._otw is None or self._otw.t < 0:
+            return 0.0
+
+        j        = self._otw.last_j
+        t        = self._otw.t
+        ref_vec  = self._ref_cens[:, min(j, self._n_ref_frames - 1)]
+        live_vec = self._otw.live[:, t]
+        return float(np.clip(np.dot(ref_vec, live_vec), 0.0, 1.0))
+
+    def _load_audio(self, path: str) -> np.ndarray:
         """
-        OTW - szuka tylko w okolicy ostatniej znanej pozycji.
+        Load audio from a WAV/MP3/FLAC file or synthesise from MIDI.
+        Always returns a float32 mono array resampled to self.sr.
         """
-        import time
-        start_time = time.time()
-        
-        if self.reference_features is None:
-            raise ValueError("Reference not loaded!")
-        
-        # Ekstrahuj features
-        query_features = self._extract_features_from_frame(audio_frame)
-        
-        # Określ zakres wyszukiwania wokół ostatniej pozycji
-        current_frame = int(self.current_position / (self.hop_length / 22050))
-        search_start = max(0, current_frame - self.search_margin)
-        search_end = min(
-            self.reference_features.shape[1],
-            current_frame + self.search_margin
-        )
-        
-        # DTW tylko w tym zakresie
-        ref_slice = self.reference_features[:, search_start:search_end]
-        
-        if ref_slice.shape[1] > 0:
-            distance, path = fastdtw(
-                query_features.T,
-                ref_slice.T,
-                dist=euclidean
+        ext = os.path.splitext(path)[1].lower()
+
+        if ext in (".wav", ".mp3", ".flac", ".ogg", ".aac"):
+            audio, sr = librosa.load(path, sr=None, mono=True)
+            if sr != self.sr:
+                audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sr)
+            return audio.astype(np.float32)
+
+        if ext in (".mid", ".midi"):
+            return self._synth_midi(path)
+
+        raise ValueError(f"Unsupported reference format: '{ext}'")
+
+    def _synth_midi(self, midi_path: str) -> np.ndarray:
+        """
+        Synthesise MIDI to audio via pretty_midi / FluidSynth.
+        Falls back to silence if FluidSynth is not available (common on Windows).
+        """
+        try:
+            import pretty_midi
+            pm    = pretty_midi.PrettyMIDI(midi_path)
+            audio = pm.fluidsynth(fs=self.sr)
+            return audio.astype(np.float32)
+        except Exception as exc:
+            duration_est = 60
+            print(
+                f"[OTWModel] MIDI synthesis failed ({exc}). "
+                f"Falling back to {duration_est}s of silence as reference."
             )
-            
-            if len(path) > 0:
-                _, ref_idx = path[-1]
-                # Dodaj offset od początku referencji
-                absolute_idx = search_start + ref_idx
-                predicted_time = self.reference_times[min(absolute_idx, len(self.reference_times)-1)]
-                
-                self.current_position = predicted_time
-                
-                max_distance = np.sqrt(query_features.shape[0] * query_features.shape[1])
-                confidence = max(0, 1 - distance / max_distance)
-            else:
-                predicted_time = self.current_position
-                confidence = 0.0
-        else:
-            predicted_time = self.current_position
-            confidence = 0.0
-        
-        latency = (time.time() - start_time) * 1000
-        
-        return {
-            'position': predicted_time,
-            'confidence': confidence,
-            'tempo': 120.0,
-            'latency': latency
-        }
+            return np.zeros(int(duration_est * self.sr), dtype=np.float32)
 
 
-# Przykład użycia
-if __name__ == "__main__":
-    # Test DTW model
-    print("Testing DTW Model...")
-    
-    model = DTWModel(window_size=100)
-    print(f"Model: {model.name}")
-    print(f"Requires training: {model.requires_training()}")
-    
-    # OTW model
-    otw = OnlineTimeWarping(window_size=100, search_margin=30)
-    print(f"\nModel: {otw.name}")
-    print(f"Search margin: {otw.search_margin} frames")
+# ---------------------------------------------------------------------------
+# Backwards-compatibility aliases
+#
+# Existing experiment scripts that import DTWModel or OnlineTimeWarping
+# continue to work unchanged.  Both are now thin wrappers around OTWModel.
+# ---------------------------------------------------------------------------
+
+class DTWModel(OTWModel):
+    """Backwards-compatible alias for OTWModel (replaces the old fastdtw placeholder)."""
+
+    def __init__(self, window_size: int = 100, hop_length: int = 512,
+                 feature_type: str = "chroma", **kwargs):
+        # The old parameters (window_size, hop_length, feature_type) are no
+        # longer used; the real OTW algorithm manages its own windowing.
+        super().__init__(**kwargs)
+        self.name = "OTW-ConcertCue"
+
+
+class OnlineTimeWarping(OTWModel):
+    """Backwards-compatible alias for OTWModel (replaces the old search-margin variant)."""
+
+    def __init__(self, window_size: int = 100, search_margin: int = 50, **kwargs):
+        # search_margin is superseded by the OTW 'c' parameter.
+        super().__init__(**kwargs)
+        self.name = "OTW-ConcertCue"
