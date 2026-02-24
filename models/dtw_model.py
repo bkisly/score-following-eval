@@ -29,27 +29,27 @@ from typing import Dict, Any, Optional
 import numpy as np
 import librosa
 
-# ---------------------------------------------------------------------------
-# Pyodide / browser-API guard
-#
-# models/otw/file_utils.py has a top-level  "from js import Blob, document, window"
-# (Pyodide browser API).  The package __init__.py re-exports everything from that
-# module, so importing *any* symbol from models.otw would fail on desktop Python.
-# We inject a lightweight mock into sys.modules before the first import so that
-# Python resolves the name without error.  save_from_browser() — the only
-# function that actually uses those objects — is never called in this binding.
-# ---------------------------------------------------------------------------
-if "js" not in sys.modules:
-    _js_mock = types.ModuleType("js")
-    _js_mock.Blob = None
-    _js_mock.document = None
-    _js_mock.window = None
-    sys.modules["js"] = _js_mock
+# # ---------------------------------------------------------------------------
+# # Pyodide / browser-API guard
+# #
+# # models/otw/file_utils.py has a top-level  "from js import Blob, document, window"
+# # (Pyodide browser API).  The package __init__.py re-exports everything from that
+# # module, so importing *any* symbol from models.otw would fail on desktop Python.
+# # We inject a lightweight mock into sys.modules before the first import so that
+# # Python resolves the name without error.  save_from_browser() — the only
+# # function that actually uses those objects — is never called in this binding.
+# # ---------------------------------------------------------------------------
+# if "js" not in sys.modules:
+#     _js_mock = types.ModuleType("js")
+#     _js_mock.Blob = None
+#     _js_mock.document = None
+#     _js_mock.window = None
+#     sys.modules["js"] = _js_mock
 
-# Add the project root to sys.path so that "models.*" package imports resolve.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+# # Add the project root to sys.path so that "models.*" package imports resolve.
+# _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# if _PROJECT_ROOT not in sys.path:
+#     sys.path.insert(0, _PROJECT_ROOT)
 
 from models.base_model import BaseScoreFollower
 from models.otw.otw import OTW

@@ -12,7 +12,7 @@ from evaluation.evaluator import Evaluator
 
 BASE_PATH = "C:\\Users\\bkisl\\Desktop\\"
 
-AUDIO_FILE = f"{BASE_PATH}Chopin - Nocturne op.9 No.2.mp3"
+AUDIO_FILE = f"{BASE_PATH}chno0902.mid"
 MIDI_FILE = f"{BASE_PATH}chno0902.mid"
 
 def main():
@@ -22,7 +22,7 @@ def main():
     
     # KROK 2: Stwórz modele
     print("\n[1/3] Creating models...")
-    otw = OTWModel(window_size=100, search_margin=30)
+    otw = OTWModel()
     print(f"  ✓ Created {otw.name}")
     
     # KROK 3: Stwórz ewaluator

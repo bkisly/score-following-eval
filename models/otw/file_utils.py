@@ -2,7 +2,7 @@ import sys
 import numpy as np
 import wave
 
-from js import Blob, document, window
+#from js import Blob, document, window
 
 
 def load_wav(filepath, t_start=0, t_end=sys.maxsize):
@@ -44,17 +44,17 @@ def load_wav(filepath, t_start=0, t_end=sys.maxsize):
         raise ("Can only handle mono or stereo wave files")
 
 
-def save_from_browser(file, filename):
-    "pass numpy array out of the Pyodide in-memory filesystem to save to disk from browser"
-    np.set_printoptions(threshold=np.inf)
-    blob = Blob.new(
-        [np.array2string(file, separator=",", suppress_small=True)[1:-1]],
-        {type: "text/csv"},
-    )
-    url = window.URL.createObjectURL(blob)
+# def save_from_browser(file, filename):
+#     "pass numpy array out of the Pyodide in-memory filesystem to save to disk from browser"
+#     np.set_printoptions(threshold=np.inf)
+#     blob = Blob.new(
+#         [np.array2string(file, separator=",", suppress_small=True)[1:-1]],
+#         {type: "text/csv"},
+#     )
+#     url = window.URL.createObjectURL(blob)
 
-    downloadLink = document.createElement("a")
-    downloadLink.href = url
-    downloadLink.download = filename
-    document.body.appendChild(downloadLink)
-    downloadLink.click()
+#     downloadLink = document.createElement("a")
+#     downloadLink.href = url
+#     downloadLink.download = filename
+#     document.body.appendChild(downloadLink)
+#     downloadLink.click()

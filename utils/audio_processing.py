@@ -5,7 +5,7 @@ Narzędzia do przetwarzania audio dla systemów śledzenia partytury.
 import numpy as np
 import librosa
 from typing import Tuple, Optional
-import pretty_midi
+#import pretty_midi
 
 
 class AudioProcessor:

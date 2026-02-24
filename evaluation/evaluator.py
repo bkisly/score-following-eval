@@ -64,7 +64,9 @@ class Evaluator:
             print(f"\nEvaluating {model.name} on {Path(audio_path).name}")
         
         # Wczytaj audio
-        audio, sr = self.audio_processor.load_audio(audio_path)
+        midi = self.midi_processor.load_midi(reference_path)
+        audio, sr = self.audio_processor.load_audio(audio_path) if ".mid" not in audio_path \
+            else self.midi_processor.synthesize_audio(midi), 22050
         
         # Wczytaj referencję
         model.load_reference(reference_path)
@@ -72,12 +74,11 @@ class Evaluator:
         
         # Jeśli nie ma ground truth, stwórz uproszczone
         if ground_truth_alignment is None:
-            midi = self.midi_processor.load_midi(reference_path)
             midi_duration = self.midi_processor.get_duration(midi)
             audio_duration = len(audio) / sr
             
             # Liniowe mapowanie
-            n_frames = len(audio) // self.audio_processor.hop_length
+            n_frames = len(audio) // 2048
             ground_truth_alignment = np.linspace(0, midi_duration, n_frames)
         
         # Symuluj real-time processing
