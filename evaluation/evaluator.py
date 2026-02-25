@@ -18,6 +18,9 @@ from utils.audio_processing import AudioProcessor, simulate_real_time_input
 from utils.midi_processing import MIDIProcessor
 
 
+CHUNK_SIZE = 2048
+
+
 class Evaluator:
     """
     Ewaluator do porównywania modeli śledzenia partytury.
@@ -66,20 +69,16 @@ class Evaluator:
         # Wczytaj audio
         midi = self.midi_processor.load_midi(reference_path)
         audio, sr = self.audio_processor.load_audio(audio_path) if ".mid" not in audio_path \
-            else self.midi_processor.synthesize_audio(midi), 22050
+            else (self.midi_processor.synthesize_audio(midi), 22050)
         
         # Wczytaj referencję
         model.load_reference(reference_path)
         model.reset()
-        
-        # Jeśli nie ma ground truth, stwórz uproszczone
+
+        #audio = self.audio_processor.time_stretch(audio, 1)
+
         if ground_truth_alignment is None:
-            midi_duration = self.midi_processor.get_duration(midi)
-            audio_duration = len(audio) / sr
-            
-            # Liniowe mapowanie
-            n_frames = len(audio) // 2048
-            ground_truth_alignment = np.linspace(0, midi_duration, n_frames)
+            ground_truth_alignment = self._generate_ground_truth(audio, midi)
         
         # Symuluj real-time processing
         chunks = simulate_real_time_input(
@@ -123,7 +122,17 @@ class Evaluator:
             print(metrics)
         
         return metrics
-    
+
+    def _generate_ground_truth(self, audio, midi, chunk_size=CHUNK_SIZE):
+        """
+        Generates simplified ground truth alignment by linear mapping of MIDI file length in seconds
+        to the amount of frames in the given audio file.
+        """
+
+        midi_duration = self.midi_processor.get_duration(midi)
+        n_frames = len(audio) // chunk_size
+        return np.linspace(0, midi_duration, n_frames)
+
     def evaluate_tempo_robustness(self,
                                   model: BaseScoreFollower,
                                   audio_path: str,

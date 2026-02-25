@@ -10,10 +10,10 @@ from evaluation.evaluator import Evaluator
 # KROK 1: Ustaw ścieżki do swoich plików
 # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
 
-BASE_PATH = "C:\\Users\\bkisl\\Desktop\\"
+BASE_PATH = "C:\\Users\\bkisl\\Desktop\\maestro-v3.0.0\\"
 
-AUDIO_FILE = f"{BASE_PATH}chno0902.mid"
-MIDI_FILE = f"{BASE_PATH}chno0902.mid"
+AUDIO_FILE = f"{BASE_PATH}2018\\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
+MIDI_FILE = f"{BASE_PATH}2018\\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
 
 def main():
     print("=" * 70)
