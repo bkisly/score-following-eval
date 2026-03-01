@@ -75,7 +75,7 @@ class Evaluator:
         model.load_reference(reference_path)
         model.reset()
 
-        #audio = self.audio_processor.time_stretch(audio, 1)
+        #audio = self.audio_processor.time_stretch(audio, 0.8)
 
         if ground_truth_alignment is None:
             ground_truth_alignment = self._generate_ground_truth(audio, midi)

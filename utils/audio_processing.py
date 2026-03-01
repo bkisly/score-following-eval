@@ -41,7 +41,8 @@ class AudioProcessor:
             (audio_signal, sample_rate)
         """
         audio, sr = librosa.load(audio_path, sr=self.sr)
-        return audio, sr
+        trimmed_audio, _ = librosa.effects.trim(audio)
+        return trimmed_audio, sr
     
     def compute_spectrogram(self, 
                            audio: np.ndarray,
