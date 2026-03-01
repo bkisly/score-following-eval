@@ -110,13 +110,33 @@ class CYOLOModel(BaseScoreFollower):
         """
         Import and load the pretrained CYOLO network.
 
-        The torchaudio.set_audio_backend call in cyolo_score_following/
-        models/custom_modules.py raises RuntimeError (or AttributeError on
-        newer torchaudio) when sox is unavailable.  We patch the attribute
-        to a no-op for the duration of the import.
+        Two compatibility patches are applied for the duration of the import:
+
+        1. numpy — madmom 0.16.1 (used by custom_modules.py for the log-frequency
+           filterbank) references type aliases removed in numpy 1.24 (np.int,
+           np.float, …).  We restore them as aliases to the built-in types.
+
+        2. torchaudio — custom_modules.py calls torchaudio.set_audio_backend("sox_io")
+           at module level.  On Windows (or torchaudio >= 2.0 where the API was
+           removed) this raises RuntimeError / AttributeError.  We replace the
+           attribute with a no-op for the duration of the import.
         """
+        import numpy as np
+
+        # Patch 1: numpy type-alias compatibility for madmom 0.16.1
+        _numpy_aliases = {
+            "int": int, "float": float, "complex": complex,
+            "bool": bool, "object": object, "str": str,
+        }
+        _numpy_added: list = []
+        for _alias, _builtin in _numpy_aliases.items():
+            if not hasattr(np, _alias):
+                setattr(np, _alias, _builtin)
+                _numpy_added.append(_alias)
+
         import torchaudio  # type: ignore[import]
 
+        # Patch 2: torchaudio sox_io backend
         _orig_backend = getattr(torchaudio, "set_audio_backend", _MISSING)
         torchaudio.set_audio_backend = lambda *_: None  # type: ignore[attr-defined]
 
@@ -125,7 +145,12 @@ class CYOLOModel(BaseScoreFollower):
         finally:
             if _orig_backend is not _MISSING:
                 torchaudio.set_audio_backend = _orig_backend  # type: ignore[attr-defined]
-            # If the attribute was absent originally we leave our harmless no-op in place.
+            # Remove the numpy aliases we added (leave pre-existing ones untouched)
+            for _alias in _numpy_added:
+                try:
+                    delattr(np, _alias)
+                except AttributeError:
+                    pass
 
         self.network, _ = load_pretrained_model(self.param_path)
         self.network.to(self.device)

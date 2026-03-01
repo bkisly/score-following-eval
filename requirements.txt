@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
+
 # Core dependencies
 numpy>=1.24.0
 scipy>=1.10.0
@@ -9,6 +11,12 @@ pyfluidsynth
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
+
+# CYOLO dependency: log-frequency filterbank used by LogSpectrogram in custom_modules.py.
+# madmom 0.16.1 uses removed numpy type aliases (np.int, np.float, …); a
+# compatibility shim is applied at runtime in models/cyolo_model.py so that
+# it works alongside numpy>=1.24.
+git+https://github.com/CPJKU/madmom
 
 # Computer Vision (for CYOLO)
 opencv-python>=4.8.0
