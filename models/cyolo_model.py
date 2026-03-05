@@ -102,9 +102,13 @@ class CYOLOModel(BaseScoreFollower):
         self.staff_coords: Optional[Dict[int, List[float]]] = None
         self.add_per_staff: Optional[Dict[int, np.ndarray]] = None
 
+        # Per-page start times in seconds (populated by load_reference when
+        # timestamps are available; empty list means single-page / no tracking)
+        self.page_timestamps: List[float] = []
+
         # Runtime state (reset between pieces)
         self.hidden = None               # LSTM (h, c) tuple
-        self.elapsed_samples: int = 0   # total samples seen at _CYOLO_SR
+        self.elapsed_samples: int = 0    # total samples seen at _CYOLO_SR
         self.current_page: int = 0
 
         # Load pretrained network
@@ -171,24 +175,27 @@ class CYOLOModel(BaseScoreFollower):
 
     def load_reference(self, reference_path: str) -> None:
         """
-        Load the score reference.
+        Load the score reference from a MIDI file.
+
+        MuseScore renders the MIDI as sheet music PNG pages (one 416×416
+        matrix per page).  A second MuseScore call exports the same score as
+        MusicXML so that page-break measure numbers can be extracted and
+        converted to timestamps via pretty_midi — enabling automatic page
+        tracking during process_frame().
 
         Parameters
         ----------
         reference_path : str
-            Path to a MIDI file (.mid / .midi).  MuseScore is used to render
-            the MIDI as sheet music PNG pages, which are then resized to
-            416×416 and converted to CYOLO's convention (1 = ink, 0 = bg).
-
-            No onset annotation data is available from MIDI alone, so
-            position is returned as a normalised fraction [0, 1] of the
-            score width via the fallback in process_frame().
+            Path to a MIDI file (.mid / .midi).
         """
         self.reference_score = reference_path
 
-        # MIDI → per-page 416×416 float32 arrays, values in [0, 1]
-        # (0 = black ink, 1 = white background — standard image convention)
-        matrices = midi_to_matrices(reference_path, grayscale=True)
+        # MIDI → per-page 416×416 float32 arrays  [0,1] (0=ink, 1=bg)
+        # and per-page start timestamps in seconds.
+        matrices, page_timestamps = midi_to_matrices(
+            reference_path, grayscale=True, return_timestamps=True
+        )
+        self.page_timestamps = page_timestamps
 
         # Invert to CYOLO convention: 1 = ink, 0 = background
         matrices_inv = [1.0 - m for m in matrices]
@@ -198,12 +205,12 @@ class CYOLOModel(BaseScoreFollower):
             torch.from_numpy(np.stack(matrices_inv)).unsqueeze(1).to(self.device)
         )
 
-        # Images are already 416×416 — no additional scaling was applied
+        # Images are already 416×416 — no additional scaling applied
         self.scale_factor = 1.0
         self.pad = 0
 
-        # No annotation data available from MIDI path — disable time conversion.
-        # process_frame() will fall back to returning a normalised x position.
+        # No pixel-level onset annotations (MIDI path only) — the bbox
+        # centre x fallback in process_frame returns a normalised [0,1] position.
         self.interpol_fnc  = None
         self.interpol_c2o  = None
         self.staff_coords  = None
@@ -216,7 +223,7 @@ class CYOLOModel(BaseScoreFollower):
         Follows the per-frame inference loop from test.py:
           1. Resample to 22 050 Hz if necessary.
           2. Compute log-frequency spectrogram (78 bands).
-          3. Advance page counter via annotation lookup (with .npz only).
+          3. Advance page counter via per-page start timestamps.
           4. Update streaming LSTM conditioning via get_conditioning().
           5. Run YOLO predict() on the current score page.
           6. Extract highest-confidence note detection (class 0).
@@ -251,15 +258,24 @@ class CYOLOModel(BaseScoreFollower):
             # 2. Log-frequency spectrogram ([T, 78])
             spec_frame = self.network.compute_spec([sig], tempo_aug=False)[0]
 
-            # 3. Page tracking via annotation interpolation (.npz only)
-            if self.interpol_fnc is not None:
-                frame_idx = int(self.elapsed_samples / self._HOP_SIZE)
-                true_pos = np.asarray(self.interpol_fnc(frame_idx), dtype=np.float32)
-                new_page = int(true_pos[-1])
+            # 3. Page tracking via per-page timestamps
+            #    Advance current_page whenever elapsed time passes the next
+            #    page's start timestamp.  Reset the LSTM hidden state on each
+            #    page turn so the conditioning network re-adapts to the new page.
+            if len(self.page_timestamps) > 1:
+                current_time = self.elapsed_samples / self._CYOLO_SR
+                # Walk backward from the last page so we land on the correct
+                # page even if multiple pages were skipped in one frame.
+                new_page = len(self.page_timestamps) - 1
+                for i in range(len(self.page_timestamps) - 1, -1, -1):
+                    if current_time >= self.page_timestamps[i]:
+                        new_page = i
+                        break
+                # Clamp to the number of loaded score pages
+                new_page = min(new_page, self.score_tensor.shape[0] - 1)
                 if new_page != self.current_page:
-                    # Reset LSTM hidden state on page change (mirrors test.py behaviour)
                     self.current_page = new_page
-                    self.hidden = None
+                    self.hidden = None  # reset LSTM on page turn (mirrors test.py)
 
             # 4. Streaming LSTM conditioning update
             z, self.hidden = self.network.conditioning_network.get_conditioning(
