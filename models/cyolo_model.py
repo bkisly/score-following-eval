@@ -6,8 +6,12 @@ interface.  Follows the real-time inference loop from models/cyolo/
 cyolo_score_following/test.py exactly.
 
 Reference loading supports:
+  * MIDI file (.mid / .midi) — rendered to sheet music pages via MuseScore,
+    resized to 416×416; position returned as normalised [0, 1] (no annotations)
   * MSMD .npz file  — score images + annotation data for precise time conversion
+    (via the internal _load_npz helper, kept for reference / future use)
   * PNG / JPG image — score image only; position is returned as normalised [0,1]
+    (via the internal _load_image helper)
 """
 
 import os
@@ -172,32 +176,38 @@ class CYOLOModel(BaseScoreFollower):
         Parameters
         ----------
         reference_path : str
-            Path to an MSMD .npz file **or** a single score image (.png / .jpg).
+            Path to a MIDI file (.mid / .midi).  MuseScore is used to render
+            the MIDI as sheet music PNG pages, which are then resized to
+            416×416 and converted to CYOLO's convention (1 = ink, 0 = bg).
 
-            .npz  — provides score images + onset annotations; enables accurate
-                    time conversion and automatic page tracking.
-            image — score image only; position is returned as a normalised
-                    fraction [0, 1] of the score width.
+            No onset annotation data is available from MIDI alone, so
+            position is returned as a normalised fraction [0, 1] of the
+            score width via the fallback in process_frame().
         """
-        # import cv2  # type: ignore[import]
-        #
-        # self.reference_score = reference_path
-        #
-        # if reference_path.lower().endswith(".npz"):
-        #     self._load_npz(reference_path, cv2)
-        # elif reference_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
-        #     self._load_image(reference_path, cv2)
-        # else:
-        #     raise ValueError(
-        #         f"Unsupported reference format for CYOLO: {reference_path!r}. "
-        #         "Expected an MSMD .npz file or a score image (.png / .jpg)."
-        #     )
+        self.reference_score = reference_path
 
+        # MIDI → per-page 416×416 float32 arrays, values in [0, 1]
+        # (0 = black ink, 1 = white background — standard image convention)
         matrices = midi_to_matrices(reference_path, grayscale=True)
-        matrices_inv = [1.0 - matrix for matrix in matrices]
+
+        # Invert to CYOLO convention: 1 = ink, 0 = background
+        matrices_inv = [1.0 - m for m in matrices]
+
+        # Stack into [n_pages, 1, 416, 416] tensor
         self.score_tensor = (
             torch.from_numpy(np.stack(matrices_inv)).unsqueeze(1).to(self.device)
         )
+
+        # Images are already 416×416 — no additional scaling was applied
+        self.scale_factor = 1.0
+        self.pad = 0
+
+        # No annotation data available from MIDI path — disable time conversion.
+        # process_frame() will fall back to returning a normalised x position.
+        self.interpol_fnc  = None
+        self.interpol_c2o  = None
+        self.staff_coords  = None
+        self.add_per_staff = None
 
     def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
