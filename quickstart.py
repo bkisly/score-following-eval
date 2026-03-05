@@ -5,15 +5,16 @@ Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 """
 
 from models.dtw_model import OTWModel
+from models.cyolo_model import CYOLOModel
 from evaluation.evaluator import Evaluator
 
 # KROK 1: Ustaw ścieżki do swoich plików
 # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
 
-BASE_PATH = "C:\\Users\\bkisl\\Desktop\\"
+BASE_PATH = r"C:\Users\bkisl\Desktop\maestro-v3.0.0\maestro-v3.0.0"
 
-AUDIO_FILE = f"{BASE_PATH}chopin-etude-op10-no4.mp3"
-MIDI_FILE = f"{BASE_PATH}chopin-etude-op10-no4.mid"
+AUDIO_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
+MIDI_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
 
 def main():
     print("=" * 70)
@@ -24,7 +25,9 @@ def main():
     print("\n[1/3] Creating models...")
     otw = OTWModel()
     print(f"  ✓ Created {otw.name}")
-    
+    cyolo = CYOLOModel()
+    print(f"  ✓ Created {cyolo.name}")
+
     # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
     evaluator = Evaluator(tolerance_seconds=0.5)
@@ -33,7 +36,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[otw],
+        models=[otw, cyolo],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
