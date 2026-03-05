@@ -329,17 +329,99 @@ def extract_page_timestamps(
     return timestamps
 
 
+def build_page_measure_interpolators(
+    page_break_measures: list[int],
+    measure_time_map: dict[int, float],
+    n_pages: int,
+) -> list:
+    """
+    Build per-page x-fraction → time-in-seconds interpolators.
+
+    The linear x→time approximation (``page_start + x_norm*(page_end-page_start)``)
+    is systematically wrong for music with tempo changes or uneven note
+    density — a whole note and a quarter note occupy similar horizontal space
+    but very different time.  This function improves on that by distributing
+    the known measure timestamps evenly across the page width, so at least
+    measure-level timing is correct.
+
+    Assumption: measures are laid out left-to-right in equal horizontal steps
+    within each page.  This is an approximation — engraving algorithms do
+    allocate more space to longer notes — but it is far better than a single
+    linear interpolation across the whole page.
+
+    Parameters
+    ----------
+    page_break_measures : List returned by ``_parse_page_break_measures``.
+        1-based first-measure number of each page, length == n_pages.
+    measure_time_map    : Dict returned by ``_build_measure_time_map``.
+        Maps 1-based measure number → start time in seconds.
+    n_pages : Number of score pages.
+
+    Returns
+    -------
+    List of ``n_pages`` interpolators (``scipy.interpolate.interp1d`` objects).
+    An entry is ``None`` for any page with fewer than 2 known measures
+    (extremely rare; caller should fall back to page-level linear).
+    """
+    from scipy import interpolate  # type: ignore[import]
+
+    max_measure = max(measure_time_map.keys())
+    interps: list = []
+
+    for p in range(n_pages):
+        first_m = page_break_measures[p]
+        # Last measure on this page = first measure of next page minus 1,
+        # or the last measure in the piece for the final page.
+        last_m = (
+            page_break_measures[p + 1] - 1
+            if p + 1 < len(page_break_measures)
+            else max_measure
+        )
+
+        # Keep only measures that actually appear in the MIDI timing map
+        measures = [m for m in range(first_m, last_m + 1) if m in measure_time_map]
+
+        if len(measures) < 2:
+            interps.append(None)
+            continue
+
+        n      = len(measures)
+        x_frac = np.linspace(0.0, 1.0, n)          # evenly spaced across page width
+        times  = np.array([measure_time_map[m] for m in measures], dtype=np.float64)
+
+        interps.append(
+            interpolate.interp1d(
+                x_frac, times,
+                kind="linear", bounds_error=False,
+                fill_value=(times[0], times[-1]),
+            )
+        )
+
+    return interps
+
+
 # ---------------------------------------------------------------------------
 # STAGE 2: PNG images → numpy matrices
 # ---------------------------------------------------------------------------
+
 
 def images_to_numpy(
     image_paths: list[str],
     target_size: tuple[int, int] = TARGET_SIZE,
     grayscale: bool = GRAYSCALE,
-) -> list[np.ndarray]:
+) -> tuple[list[np.ndarray], list[float]]:
     """
     Load and resize PNG images into normalised numpy arrays.
+
+    Pre-processing pipeline (matches CYOLO training exactly):
+      1. Flatten RGBA transparency onto white.
+      2. Convert to grayscale.
+      3. **Otsu binarize** — snap antialiased MuseScore pixels to pure black /
+         white, matching the high-contrast LilyPond-rendered MSMD images the
+         model was trained on.
+      4. **Pad to square** with white fill (top-left anchor) before resizing —
+         avoids stretching staff-line geometry.
+      5. Resize to ``target_size`` with Lanczos resampling.
 
     Parameters
     ----------
@@ -349,34 +431,60 @@ def images_to_numpy(
 
     Returns
     -------
-    List of float32 numpy arrays with pixel values in [0.0, 1.0].
+    matrices : list[np.ndarray]
+        Float32 arrays in [0.0, 1.0], one per page.
+    content_width_fractions : list[float]
+        For each page, the fraction of the square canvas occupied by real
+        score content in the x-direction:
+        ``original_width / max(original_width, original_height)``.
+        Used to convert predicted x pixel coordinates back to a true [0, 1]
+        position within the score (undoing the effect of padding).
+        Always 1.0 for landscape pages (width ≥ height).
     """
     print(f"[2/3] Converting {len(image_paths)} image(s) to numpy "
           f"({'grayscale' if grayscale else 'RGB'}, {target_size})...")
 
-    matrices = []
+    matrices: list[np.ndarray] = []
+    content_width_fractions: list[float] = []
+
     for i, path in enumerate(image_paths):
         img = Image.open(path)
 
-        # Sheet music exported by MuseScore may be RGBA (transparent background).
-        # Composite onto white before converting so transparency → white pixels.
+        # 1. Flatten RGBA transparency onto white
         if img.mode == "RGBA":
             background = Image.new("RGB", img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3])  # use alpha channel as mask
+            background.paste(img, mask=img.split()[3])
             img = background
         else:
             img = img.convert("RGB")
 
-        if grayscale:
-            img = img.convert("L")
+        # 2. Grayscale
+        img = img.convert("L")
+
+        # 3. Pad to square (capture content fraction BEFORE padding)
+        #    CYOLO was trained on MSMD pages padded to square before resizing.
+        #    Direct stretching deforms staff-line geometry.
+        w, h = img.size                            # PIL: (width, height)
+        content_width_fractions.append(w / max(w, h))
+        if w != h:
+            side   = max(w, h)
+            canvas = Image.new("L", (side, side), 255)
+            canvas.paste(img, (0, 0))              # top-left anchor, matches _load_npz
+            img    = canvas
+
+        # 4. Final resize
+        if not grayscale:
+            img = img.convert("RGB")
 
         img = img.resize(target_size, resample=Image.LANCZOS)
         arr = np.array(img, dtype=np.float32) / 255.0
         matrices.append(arr)
-        print(f"    Page {i + 1}: shape={arr.shape}, min={arr.min():.3f}, max={arr.max():.3f}")
+        print(f"    Page {i + 1}: shape={arr.shape}, "
+              f"content_width={content_width_fractions[-1]:.3f}, "
+              f"min={arr.min():.3f}, max={arr.max():.3f}")
 
     print(f"[2/3] Done. {len(matrices)} matrix/matrices ready.")
-    return matrices
+    return matrices, content_width_fractions
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +498,7 @@ def midi_to_matrices(
     grayscale: bool = GRAYSCALE,
     keep_images: bool = True,
     return_timestamps: bool = False,
-) -> "list[np.ndarray] | tuple[list[np.ndarray], list[float]]":
+) -> "list[np.ndarray] | tuple[list[np.ndarray], list[float], list[float], list]":
     """
     End-to-end pipeline: MIDI → sheet music PNGs → numpy matrices.
 
@@ -402,37 +510,56 @@ def midi_to_matrices(
     target_size       : Output matrix size (width, height). Default (416, 416).
     grayscale         : Produce single-channel matrices. Default False (RGB).
     keep_images       : If False, delete the intermediate folder when done.
-    return_timestamps : If True, also compute and return per-page start times.
+    return_timestamps : If True, also compute and return timing metadata.
                         Requires an extra MuseScore call to export MusicXML and
                         ``pretty_midi`` to be installed.
 
     Returns
     -------
     ``return_timestamps=False`` (default)
-        List of float32 numpy arrays, one per sheet music page.
-        Shape: (416, 416) if grayscale, else (416, 416, 3).
+        ``list[np.ndarray]`` — float32 arrays, one per page.
 
     ``return_timestamps=True``
-        ``(matrices, timestamps)`` where ``matrices`` is as above and
-        ``timestamps`` is a ``list[float]`` of length ``n_pages``:
-        ``timestamps[i]`` is the time in seconds at which page ``i+1`` begins.
-        ``timestamps[0]`` is always ``0.0``.
+        ``(matrices, page_timestamps, content_width_fractions, page_measure_interpolators)``
+
+        matrices : list[np.ndarray]
+            Float32 arrays, one per page.
+        page_timestamps : list[float]
+            Start time in seconds of each page.  ``page_timestamps[0]`` is 0.0.
+        content_width_fractions : list[float]
+            Per-page fraction of the 416-wide canvas that contains real score
+            content.  Use to un-pad x coordinates: ``x_true = x_416 / (416 * cwf)``.
+        page_measure_interpolators : list
+            Per-page ``scipy.interpolate.interp1d`` objects mapping a normalised
+            x-fraction [0, 1] to time in seconds using measure-level timestamps.
+            An entry may be ``None`` for pages with fewer than 2 measures.
     """
     print(f"\n{'='*55}")
     print(f"  MIDI → Matrices Pipeline")
     print(f"  Input : {midi_path}")
     print(f"  Output: {target_size[0]}x{target_size[1]} {'grayscale' if grayscale else 'RGB'}")
     if return_timestamps:
-        print(f"  Mode  : matrices + page timestamps")
+        print(f"  Mode  : matrices + full timing metadata")
     print(f"{'='*55}\n")
 
-    image_paths = midi_to_sheet_images(midi_path, output_dir)
-    matrices    = images_to_numpy(image_paths, target_size, grayscale)
+    image_paths              = midi_to_sheet_images(midi_path, output_dir)
+    matrices, content_width_fractions = images_to_numpy(image_paths, target_size, grayscale)
 
-    timestamps: list[float] | None = None
+    page_timestamps: list[float] | None = None
+    page_measure_interpolators: list | None = None
+
     if return_timestamps:
-        mxl_path   = midi_to_musicxml(midi_path, output_dir)
-        timestamps = extract_page_timestamps(mxl_path, midi_path, n_pages=len(matrices))
+        mxl_path            = midi_to_musicxml(midi_path, output_dir)
+        page_break_measures = _parse_page_break_measures(mxl_path)
+        measure_time_map    = _build_measure_time_map(midi_path)
+
+        # Page-level timestamps (one per page)
+        page_timestamps = extract_page_timestamps(mxl_path, midi_path, n_pages=len(matrices))
+
+        # Per-page x-fraction → time interpolators (measure-level resolution)
+        page_measure_interpolators = build_page_measure_interpolators(
+            page_break_measures, measure_time_map, n_pages=len(matrices)
+        )
 
     if not keep_images:
         shutil.rmtree(output_dir, ignore_errors=True)
@@ -443,7 +570,7 @@ def midi_to_matrices(
     print(f"\n✓ Pipeline complete: {len(matrices)} page(s) converted.\n")
 
     if return_timestamps:
-        return matrices, timestamps
+        return matrices, page_timestamps, content_width_fractions, page_measure_interpolators
     return matrices
 
 
