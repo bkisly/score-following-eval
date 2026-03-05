@@ -16,6 +16,10 @@ import time
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
+from PIL.ImageMath import imagemath_float
+
+from utils.image_processing import midi_to_matrices
+
 import numpy as np
 import torch
 
@@ -175,19 +179,25 @@ class CYOLOModel(BaseScoreFollower):
             image — score image only; position is returned as a normalised
                     fraction [0, 1] of the score width.
         """
-        import cv2  # type: ignore[import]
+        # import cv2  # type: ignore[import]
+        #
+        # self.reference_score = reference_path
+        #
+        # if reference_path.lower().endswith(".npz"):
+        #     self._load_npz(reference_path, cv2)
+        # elif reference_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+        #     self._load_image(reference_path, cv2)
+        # else:
+        #     raise ValueError(
+        #         f"Unsupported reference format for CYOLO: {reference_path!r}. "
+        #         "Expected an MSMD .npz file or a score image (.png / .jpg)."
+        #     )
 
-        self.reference_score = reference_path
-
-        if reference_path.lower().endswith(".npz"):
-            self._load_npz(reference_path, cv2)
-        elif reference_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
-            self._load_image(reference_path, cv2)
-        else:
-            raise ValueError(
-                f"Unsupported reference format for CYOLO: {reference_path!r}. "
-                "Expected an MSMD .npz file or a score image (.png / .jpg)."
-            )
+        matrices = midi_to_matrices(reference_path, grayscale=True)
+        matrices_inv = [1.0 - matrix for matrix in matrices]
+        self.score_tensor = (
+            torch.from_numpy(np.stack(matrices_inv)).unsqueeze(1).to(self.device)
+        )
 
     def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
