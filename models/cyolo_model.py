@@ -105,6 +105,7 @@ class CYOLOModel(BaseScoreFollower):
         # Per-page start times in seconds (populated by load_reference when
         # timestamps are available; empty list means single-page / no tracking)
         self.page_timestamps: List[float] = []
+        self.total_duration: float = 0.0  # end time of the piece in seconds
 
         # Runtime state (reset between pieces)
         self.hidden = None               # LSTM (h, c) tuple
@@ -216,6 +217,11 @@ class CYOLOModel(BaseScoreFollower):
         self.staff_coords  = None
         self.add_per_staff = None
 
+        # Total piece duration in seconds — needed to bound the last page's
+        # time range when converting x-position to seconds in process_frame.
+        import pretty_midi  # type: ignore[import]
+        self.total_duration: float = pretty_midi.PrettyMIDI(reference_path).get_end_time()
+
     def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
         Process one audio frame and return the estimated score position.
@@ -258,17 +264,15 @@ class CYOLOModel(BaseScoreFollower):
             # 2. Log-frequency spectrogram ([T, 78])
             spec_frame = self.network.compute_spec([sig], tempo_aug=False)[0]
 
-            # 3. Page tracking via per-page timestamps
-            #    Advance current_page whenever elapsed time passes the next
-            #    page's start timestamp.  Reset the LSTM hidden state on each
-            #    page turn so the conditioning network re-adapts to the new page.
+            # 3. Page tracking via per-page timestamps.
+            #    Use the midpoint of the current chunk as the reference time so
+            #    that page turns are detected as soon as the chunk straddles a
+            #    page boundary, rather than one full chunk late.
             if len(self.page_timestamps) > 1:
-                current_time = self.elapsed_samples / self._CYOLO_SR
-                # Walk backward from the last page so we land on the correct
-                # page even if multiple pages were skipped in one frame.
-                new_page = len(self.page_timestamps) - 1
+                chunk_mid_time = (self.elapsed_samples + len(audio) / 2) / self._CYOLO_SR
+                new_page = 0
                 for i in range(len(self.page_timestamps) - 1, -1, -1):
-                    if current_time >= self.page_timestamps[i]:
+                    if chunk_mid_time >= self.page_timestamps[i]:
                         new_page = i
                         break
                 # Clamp to the number of loaded score pages
@@ -301,8 +305,19 @@ class CYOLOModel(BaseScoreFollower):
             # 7. Convert to time in seconds
             pos = self._bbox_center_to_time(x_c, y_c, self.current_page)
             if pos is None:
-                # Fallback when annotations are unavailable: normalised [0, 1]
-                pos = x_c / self.SCALE_WIDTH
+                # No onset annotations — interpolate x position linearly within
+                # the current page's time range using page_timestamps.
+                x_norm = x_c / self.SCALE_WIDTH  # fraction across page [0, 1]
+                if self.page_timestamps:
+                    page_start = self.page_timestamps[self.current_page]
+                    page_end = (
+                        self.page_timestamps[self.current_page + 1]
+                        if self.current_page + 1 < len(self.page_timestamps)
+                        else self.total_duration
+                    )
+                    pos = page_start + x_norm * (page_end - page_start)
+                else:
+                    pos = x_norm  # last-resort: no timestamps at all
         else:
             confidence = 0.0
             pos = self.current_position
