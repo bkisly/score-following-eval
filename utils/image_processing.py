@@ -7,34 +7,39 @@ tracking.
 
 Pipeline overview
 -----------------
-Stage 1a  MIDI → LilyPond source (.ly)   (midi2ly, ships with LilyPond)
-Stage 1b  LilyPond source → PNG pages    (lilypond subprocess)
-Stage 2   PNG pages → numpy arrays       (PIL pad-to-square + resize + normalise)
+Stage 1a  MIDI → MusicXML               (MuseScore subprocess)
+Stage 1b  MusicXML → LilyPond source    (musicxml2ly, ships with LilyPond)
+Stage 1c  LilyPond source → PNG pages   (lilypond subprocess)
+Stage 2   PNG pages → numpy arrays      (PIL pad-to-square + resize + normalise)
 Stage 3   MIDI → timestamps
           • pretty_midi.get_downbeats() → precise measure-start times in seconds
           • Measures distributed evenly across pages → page-break measure numbers
           • Per-page x-fraction → time interpolators (measure-level resolution)
 
-Why LilyPond instead of MuseScore
-----------------------------------
-CYOLO was trained on MSMD, which uses LilyPond for all score rendering.
-LilyPond and MuseScore produce visually distinct output (different notehead
-fonts, staff-line weights, beam angles, spacing).  Using the same renderer
-as the training data eliminates the most significant source of domain gap
-and is expected to bring accuracy from ~4% into the 40-60% range on
-clean MIDI.
+Why this pipeline
+-----------------
+CYOLO was trained on MSMD, which was produced via MusicXML → musicxml2ly →
+LilyPond → PNG.  Replicating this exact toolchain eliminates the domain gap
+between training data and inference input:
+
+  • MuseScore handles MIDI import well: correct 2-staff piano layout,
+    triplets, ties, and intelligent quantization.  Neither midi2ly nor
+    MuseScore's direct .ly export produce acceptable results for piano MIDI.
+
+  • musicxml2ly (bundled with LilyPond) converts the clean MusicXML to
+    LilyPond source with proper voice separation — the same step used in MSMD.
+
+  • LilyPond renders with the same notehead font, staff-line weights,
+    beam angles, and spacing as the training data.
 
 Requirements
 ------------
     pip install numpy pillow pretty_midi scipy
 
-External tool (required):
-    LilyPond >= 2.24  --  https://lilypond.org/download.html
-    Includes both `lilypond` and `midi2ly` executables.
-
-Windows install paths
----------------------
-Set LILYPOND_DIR below to the folder that contains lilypond.exe and midi2ly.
+External tools (both required):
+    MuseScore 3 or 4  —  https://musescore.org/en/download
+    LilyPond >= 2.24  —  https://lilypond.org/download.html
+    (musicxml2ly ships inside the LilyPond installation)
 """
 
 import subprocess
@@ -50,10 +55,14 @@ from PIL import Image
 # CONFIG
 # ---------------------------------------------------------------------------
 
-# Set this to the folder containing lilypond.exe / midi2ly on your system:
+# Path to the LilyPond bin folder (contains lilypond.exe):
 LILYPOND_DIR = r"C:\Program Files\LilyPond\bin"
 # LILYPOND_DIR = r"C:\Program Files (x86)\LilyPond\usr\bin"
 # LILYPOND_DIR = r"C:\lilypond\usr\bin"
+
+# Path to the MuseScore executable (used only for MIDI → .ly conversion):
+MUSESCORE_PATH = r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe"
+# MUSESCORE_PATH = r"C:\Program Files\MuseScore 3\bin\MuseScore3.exe"
 
 TARGET_SIZE = (416, 416)
 GRAYSCALE   = True          # CYOLO expects single-channel input
@@ -63,34 +72,24 @@ GRAYSCALE   = True          # CYOLO expects single-channel input
 # STAGE 1a: Locate executables
 # ---------------------------------------------------------------------------
 
-def find_lilypond() -> tuple[str, str]:
+def find_lilypond() -> str:
     """
-    Return (lilypond_exe, midi2ly_script) paths.
-
-    midi2ly is always a plain Python script (no .exe).  Run it via
-    _find_lilypond_python() rather than executing it directly.
+    Return the path to the lilypond executable.
 
     Search order:
       1. LILYPOND_DIR config at top of this file.
       2. System PATH (Linux / macOS package installs).
       3. Common Windows install locations.
     """
-    def _pair(directory: str):
-        ext = ".exe" if os.name == "nt" else ""
-        ly  = os.path.join(directory, f"lilypond{ext}")
-        m2l = os.path.join(directory, "midi2ly.py")  # always a script, never .exe
-        if os.path.isfile(ly) and os.path.isfile(m2l):
-            return ly, m2l
-        return None
+    ext = ".exe" if os.name == "nt" else ""
 
-    pair = _pair(LILYPOND_DIR)
-    if pair:
-        return pair
+    candidate = os.path.join(LILYPOND_DIR, f"lilypond{ext}")
+    if os.path.isfile(candidate):
+        return candidate
 
-    ly_path  = shutil.which("lilypond")
-    m2l_path = shutil.which("midi2ly")
-    if ly_path and m2l_path:
-        return ly_path, m2l_path
+    on_path = shutil.which("lilypond")
+    if on_path:
+        return on_path
 
     for d in [
         r"C:\Program Files\LilyPond\usr\bin",
@@ -99,80 +98,176 @@ def find_lilypond() -> tuple[str, str]:
         r"C:\Program Files\LilyPond 2.25\usr\bin",
         r"C:\Program Files\LilyPond 2.24\usr\bin",
     ]:
-        pair = _pair(d)
-        if pair:
-            return pair
+        c = os.path.join(d, f"lilypond{ext}")
+        if os.path.isfile(c):
+            return c
 
     raise FileNotFoundError(
-        "LilyPond executables (lilypond + midi2ly) not found.\n"
+        "lilypond executable not found.\n"
         "Install LilyPond from https://lilypond.org/download.html\n"
-        "then set LILYPOND_DIR at the top of image_processing.py to the\n"
-        "folder containing lilypond.exe and midi2ly, e.g.:\n"
+        "then set LILYPOND_DIR at the top of image_processing.py, e.g.:\n"
         r"  C:\Program Files\LilyPond\usr\bin"
     )
 
 
-def _find_lilypond_python() -> str:
+def find_musescore() -> str:
     """
-    Return the Python interpreter to use for running midi2ly.
-
-    Prefers LilyPond's own bundled Python (lives alongside lilypond.exe) so
-    that midi2ly's imports resolve correctly without touching the project venv.
-    Falls back to sys.executable if not found.
+    Return the path to the MuseScore executable.
+    Used only for MIDI → LilyPond (.ly) export.
     """
-    import sys
-    lilypond_exe, _ = find_lilypond()
-    bin_dir = os.path.dirname(lilypond_exe)
+    if os.path.isfile(MUSESCORE_PATH):
+        return MUSESCORE_PATH
 
-    for name in ("python3.exe", "python.exe", "python3", "python"):
-        candidate = os.path.join(bin_dir, name)
-        if os.path.isfile(candidate):
-            return candidate
+    for name in ("MuseScore4", "MuseScore3", "mscore"):
+        found = shutil.which(name)
+        if found:
+            return found
 
-    return sys.executable  # project venv Python as last resort
+    for path in [
+        r"C:\Program Files\MuseScore 4\bin\MuseScore4.exe",
+        r"C:\Program Files\MuseScore 3\bin\MuseScore3.exe",
+        r"C:\Program Files (x86)\MuseScore 3\bin\MuseScore3.exe",
+    ]:
+        if os.path.isfile(path):
+            return path
+
+    raise FileNotFoundError(
+        "MuseScore executable not found.\n"
+        "Install MuseScore from https://musescore.org/en/download\n"
+        "or set MUSESCORE_PATH at the top of image_processing.py."
+    )
 
 
 # ---------------------------------------------------------------------------
-# STAGE 1b: MIDI → LilyPond source
+# STAGE 1b: MIDI → MusicXML  (via MuseScore)
 # ---------------------------------------------------------------------------
 
-def midi_to_ly(midi_path: str, output_dir: str) -> str:
+def midi_to_musicxml(midi_path: str, output_dir: str) -> str:
     """
-    Convert a MIDI file to a LilyPond source file (.ly) using midi2ly.
+    Export a MIDI file to uncompressed MusicXML using MuseScore.
 
-    midi2ly is a Python script bundled with LilyPond.  It is invoked as
-    ``python midi2ly ...`` rather than as a standalone executable.
+    MuseScore has an excellent MIDI importer: it correctly separates tracks
+    into treble + bass staves, handles triplets, ties, and complex rhythms.
+    MusicXML is then passed to musicxml2ly for LilyPond-style rendering.
 
     Returns
     -------
-    Absolute path to the generated .ly file.
+    Absolute path to the generated .musicxml file.
     """
     midi_path  = str(Path(midi_path).resolve())
     output_dir = str(Path(output_dir).resolve())
     os.makedirs(output_dir, exist_ok=True)
 
-    _, midi2ly_script = find_lilypond()
-    python_exe        = _find_lilypond_python()
-    ly_path           = os.path.join(output_dir, "sheet.ly")
+    mscore   = find_musescore()
+    mxl_path = os.path.join(output_dir, "sheet.musicxml")
 
-    # Run as: python midi2ly -o sheet.ly input.mid
-    cmd    = [python_exe, midi2ly_script, "-o", ly_path, midi_path]
-    print(f"[1a] midi2ly: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    cmd    = [mscore, midi_path, "-o", mxl_path]
+    print(f"[1a] MuseScore → MusicXML: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+
+    if result.returncode != 0:
+        print("STDOUT:", result.stdout)
+        print("STDERR:", result.stderr)
+        raise RuntimeError(
+            f"MuseScore MusicXML export failed (code {result.returncode}).\n"
+            f"Stderr: {result.stderr.strip()}"
+        )
+    if not os.path.isfile(mxl_path):
+        raise FileNotFoundError(
+            f"MuseScore did not produce '{mxl_path}'.\n"
+            f"Stderr: {result.stderr.strip()}"
+        )
+
+    print(f"[1a] MusicXML written to: {mxl_path}")
+    return mxl_path
+
+
+# ---------------------------------------------------------------------------
+# STAGE 1c: MusicXML → LilyPond source  (via musicxml2ly)
+# ---------------------------------------------------------------------------
+
+def _find_musicxml2ly() -> tuple[str, str]:
+    """
+    Return (python_exe, musicxml2ly_script) for running musicxml2ly.
+
+    musicxml2ly ships with LilyPond (same bin folder as lilypond.exe) and,
+    like midi2ly, is a plain Python script that must be run via an interpreter.
+    Prefers LilyPond's bundled Python so its imports resolve without touching
+    the project venv.
+    """
+    import sys
+    lilypond_exe = find_lilypond()
+    bin_dir      = os.path.dirname(lilypond_exe)
+
+    m2l = os.path.join(bin_dir, "musicxml2ly")
+    if not os.path.isfile(m2l):
+        m2l = os.path.join(bin_dir, "musicxml2ly.py")   # Windows LilyPond installer uses .py
+    if not os.path.isfile(m2l):
+        raise FileNotFoundError(
+            f"musicxml2ly not found in '{bin_dir}'.\n"
+            "It ships with LilyPond — check your LilyPond installation."
+        )
+
+    for name in ("python3.exe", "python.exe", "python3", "python"):
+        candidate = os.path.join(bin_dir, name)
+        if os.path.isfile(candidate):
+            return candidate, m2l
+
+    return sys.executable, m2l   # fall back to project venv Python
+
+
+def musicxml_to_ly(mxl_path: str, output_dir: str) -> str:
+    """
+    Convert a MusicXML file to LilyPond source (.ly) using musicxml2ly.
+
+    musicxml2ly (bundled with LilyPond) handles multi-staff piano scores,
+    voice separation, triplets, and ties correctly — unlike midi2ly.
+    This is also how the MSMD dataset was originally produced.
+
+    Returns
+    -------
+    Absolute path to the generated .ly file.
+    """
+    mxl_path   = str(Path(mxl_path).resolve())
+    output_dir = str(Path(output_dir).resolve())
+    os.makedirs(output_dir, exist_ok=True)
+
+    python_exe, musicxml2ly_script = _find_musicxml2ly()
+    ly_path = os.path.join(output_dir, "sheet.ly")
+
+    cmd    = [python_exe, musicxml2ly_script, "-o", ly_path, mxl_path]
+    print(f"[1b] musicxml2ly: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"midi2ly failed (code {result.returncode}).\n"
+            f"musicxml2ly failed (code {result.returncode}).\n"
             f"Stderr: {result.stderr.strip()}"
         )
     if not os.path.isfile(ly_path):
         raise FileNotFoundError(
-            f"midi2ly did not produce '{ly_path}'.\n"
+            f"musicxml2ly did not produce '{ly_path}'.\n"
             f"Stderr: {result.stderr.strip()}"
         )
 
-    print(f"[1a] LilyPond source: {ly_path}")
+    print(f"[1b] LilyPond source written to: {ly_path}")
     return ly_path
+
+
+def midi_to_ly(midi_path: str, output_dir: str) -> str:
+    """
+    Full MIDI → LilyPond source pipeline.
+
+    MIDI → MuseScore → MusicXML → musicxml2ly → .ly
+
+    MuseScore handles the MIDI import (proper 2-staff piano layout, good
+    quantization). musicxml2ly handles the MusicXML → LilyPond conversion
+    (correct voice separation, matching MSMD rendering style).
+    """
+    mxl_path = midi_to_musicxml(midi_path, output_dir)
+    return musicxml_to_ly(mxl_path, output_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +296,8 @@ def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> 
     output_dir = str(Path(output_dir).resolve())
     os.makedirs(output_dir, exist_ok=True)
 
-    lilypond, _ = find_lilypond()
-    out_stem    = os.path.join(output_dir, "sheet")
+    lilypond  = find_lilypond()
+    out_stem  = os.path.join(output_dir, "sheet")
 
     cmd = [
         lilypond,
@@ -213,8 +308,11 @@ def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> 
         ly_path,
     ]
 
-    print(f"[1b] LilyPond: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=output_dir)
+    print(f"[1c] LilyPond: {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, cwd=output_dir,
+        encoding="utf-8", errors="replace",
+    )
 
     if result.returncode != 0:
         print("STDOUT:", result.stdout[-2000:])
@@ -226,8 +324,8 @@ def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> 
 
     # LilyPond page naming: sheet.png (page 1), sheet-2.png, sheet-3.png, ...
     image_paths = sorted(
-        glob.glob(os.path.join(output_dir, "sheet*.png")),
-        key=lambda p: int(Path(p).stem.split("-")[1]) if "-" in Path(p).stem else 1,
+        glob.glob(os.path.join(output_dir, "sheet-page*.png")),
+        key=lambda p: int(Path(p).stem.split("-page")[1]) if "-" in Path(p).stem else 1,
     )
 
     if not image_paths:

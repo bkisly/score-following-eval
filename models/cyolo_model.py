@@ -205,7 +205,7 @@ class CYOLOModel(BaseScoreFollower):
         # MIDI → per-page 416×416 float32 arrays  [0,1] (0=ink, 1=bg),
         # page timestamps, content-width fractions, and measure interpolators.
         matrices, page_timestamps, content_width_fractions, page_measure_interpolators = (
-            midi_to_matrices(reference_path, grayscale=True, return_timestamps=True)
+            midi_to_matrices(reference_path, grayscale=True, return_timestamps=True, keep_images=False)
         )
         self.page_timestamps            = page_timestamps
         self.content_width_fractions    = content_width_fractions
