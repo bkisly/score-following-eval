@@ -19,6 +19,7 @@ from utils.midi_processing import MIDIProcessor
 
 
 CHUNK_SIZE = 2048
+SAMPLE_RATE = 22050
 
 
 class Evaluator:
@@ -76,22 +77,24 @@ class Evaluator:
         model.reset()
 
         #audio = self.audio_processor.time_stretch(audio, 0.8)
-
-        if ground_truth_alignment is None:
-            ground_truth_alignment = self._generate_ground_truth(audio, midi)
         
         # Symuluj real-time processing
         chunks = simulate_real_time_input(
             audio,
-            chunk_size=2048,
+            chunk_size=CHUNK_SIZE,
             sr=sr
         )
+
+        number_of_frames = len(chunks)
+
+        if ground_truth_alignment is None:
+            ground_truth_alignment = self._generate_ground_truth(midi, number_of_frames)
         
         # Przetwarzaj chunk po chunku
         predictions = []
         latencies = []
         
-        iterator = tqdm(enumerate(chunks), total=len(chunks), disable=not verbose)
+        iterator = tqdm(enumerate(chunks), total=number_of_frames, disable=not verbose)
         
         for i, chunk in iterator:
             # Predykcja
@@ -123,15 +126,16 @@ class Evaluator:
         
         return metrics
 
-    def _generate_ground_truth(self, audio, midi, chunk_size=CHUNK_SIZE):
+    def _generate_ground_truth(self, midi, num_frames, chunk_size=CHUNK_SIZE, sample_rate=SAMPLE_RATE):
         """
         Generates simplified ground truth alignment by linear mapping of MIDI file length in seconds
         to the amount of frames in the given audio file.
         """
+        midi_duration = midi.get_end_time()
+        frame_times = np.arange(num_frames) * chunk_size / sample_rate
+        frame_times = np.clip(frame_times, 0.0, midi_duration)
 
-        midi_duration = self.midi_processor.get_duration(midi)
-        n_frames = len(audio) // chunk_size
-        return np.linspace(0, midi_duration, n_frames)
+        return frame_times
 
     def evaluate_tempo_robustness(self,
                                   model: BaseScoreFollower,

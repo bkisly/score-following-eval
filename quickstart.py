@@ -11,13 +11,13 @@ from evaluation.evaluator import Evaluator
 # KROK 1: Ustaw ścieżki do swoich plików
 # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
 
-# BASE_PATH = r"C:\Users\bkisl\Desktop\maestro-v3.0.0\maestro-v3.0.0"
-#
-# AUDIO_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
-# MIDI_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
+BASE_PATH = r"C:\Users\bkisl\Desktop\maestro-v3.0.0\maestro-v3.0.0"
 
-AUDIO_FILE = r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mp3"
-MIDI_FILE = r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mid"
+AUDIO_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.wav"
+MIDI_FILE = fr"{BASE_PATH}\2018\MIDI-Unprocessed_Chamber2_MID--AUDIO_09_R3_2018_wav--1.midi"
+
+# AUDIO_FILE = r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mp3"
+# MIDI_FILE = r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mid"
 
 def main():
     print("=" * 70)
