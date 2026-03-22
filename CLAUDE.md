@@ -274,42 +274,45 @@ For synthetic testing, audio can be generated from MIDI via `MIDIProcessor.synth
 ```python
 # models/otw_binding.py
 import sys
+
 sys.path.append('models/otw')  # add path to repo source code
 
-from models.base_model import BaseScoreFollower
+from models.score_follower import ScoreFollower
+
+
 # import required modules from models/otw/
 
-class OTWBinding(BaseScoreFollower):
-    def __init__(self, **kwargs):
-        super().__init__(name="OTW-ConcertCue")
-        # initialize OTW state
+class OTWBinding(ScoreFollower):
+  def __init__(self, **kwargs):
+    super().__init__(name="OTW-ConcertCue")
+    # initialize OTW state
 
-    def load_reference(self, reference_path: str) -> None:
-        # 1. load reference audio file (WAV) or MIDI
-        # 2. extract CENS features for the full file
-        # 3. store as reference_buffer
-        pass
+  def load_reference(self, reference_path: str) -> None:
+    # 1. load reference audio file (WAV) or MIDI
+    # 2. extract CENS features for the full file
+    # 3. store as reference_buffer
+    pass
 
-    def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
-        import time
-        t0 = time.time()
-        # 1. extract CENS from audio_frame
-        # 2. run one OTW step (update cost matrix + determine position)
-        # 3. return required dict
-        latency = (time.time() - t0) * 1000
-        return {
-            'position': self.current_position,
-            'confidence': 0.0,  # or compute from cost matrix
-            'tempo': 0.0,
-            'latency': latency
-        }
+  def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
+    import time
+    t0 = time.time()
+    # 1. extract CENS from audio_frame
+    # 2. run one OTW step (update cost matrix + determine position)
+    # 3. return required dict
+    latency = (time.time() - t0) * 1000
+    return {
+      'position': self.current_position,
+      'confidence': 0.0,  # or compute from cost matrix
+      'tempo': 0.0,
+      'latency': latency
+    }
 
-    def reset(self) -> None:
-        self.current_position = 0
-        # reset OTW internal state
+  def reset(self) -> None:
+    self.current_position = 0
+    # reset OTW internal state
 
-    def requires_training(self) -> bool:
-        return False
+  def requires_training(self) -> bool:
+    return False
 ```
 
 ---

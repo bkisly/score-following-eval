@@ -51,12 +51,12 @@ import librosa
 # if _PROJECT_ROOT not in sys.path:
 #     sys.path.insert(0, _PROJECT_ROOT)
 
-from models.base_model import BaseScoreFollower
+from models.score_follower import ScoreFollower
 from models.otw.otw import OTW
 from models.otw.features import ChromaMaker, audio_to_np_cens
 
 
-class OTWModel(BaseScoreFollower):
+class OTWModel(ScoreFollower):
     """
     Score follower using Online Time Warping (OTW).
 

@@ -9,7 +9,7 @@ import numpy as np
 import time
 
 
-class BaseScoreFollower(ABC):
+class ScoreFollower(ABC):
     """
     Klasa bazowa dla wszystkich systemów śledzenia partytury.
     
@@ -150,7 +150,7 @@ class ScoreFollowerAdapter:
         results = adapter.follow_audio(audio, reference, ground_truth)
     """
     
-    def __init__(self, model: BaseScoreFollower):
+    def __init__(self, model: ScoreFollower):
         """
         Args:
             model: Instancja modelu dziedziczącego po BaseScoreFollower

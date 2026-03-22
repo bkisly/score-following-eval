@@ -12,8 +12,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.base_model import BaseScoreFollower
-from utils.metrics import MetricsCalculator, EvaluationMetrics, compare_models
+from models.score_follower import ScoreFollower
+from evaluation.metrics import MetricsCalculator, EvaluationMetrics, compare_models
 from utils.audio_processing import AudioProcessor, simulate_real_time_input
 from utils.midi_processing import MIDIProcessor
 
@@ -46,11 +46,11 @@ class Evaluator:
         print(f"Evaluator initialized (tolerance: {tolerance_seconds}s)")
     
     def evaluate_single_model(self,
-                             model: BaseScoreFollower,
-                             audio_path: str,
-                             reference_path: str,
-                             ground_truth_alignment: np.ndarray = None,
-                             verbose: bool = True) -> EvaluationMetrics:
+                              model: ScoreFollower,
+                              audio_path: str,
+                              reference_path: str,
+                              ground_truth_alignment: np.ndarray = None,
+                              verbose: bool = True) -> EvaluationMetrics:
         """
         Ewaluuje pojedynczy model na jednym utworze.
         
@@ -138,7 +138,7 @@ class Evaluator:
         return frame_times
 
     def evaluate_tempo_robustness(self,
-                                  model: BaseScoreFollower,
+                                  model: ScoreFollower,
                                   audio_path: str,
                                   reference_path: str,
                                   tempo_ratios: List[float] = [0.9, 1.0, 1.1, 1.2],
@@ -191,10 +191,10 @@ class Evaluator:
         return results
     
     def compare_all_models(self,
-                          models: List[BaseScoreFollower],
-                          audio_path: str,
-                          reference_path: str,
-                          save_results: bool = True) -> Dict[str, EvaluationMetrics]:
+                           models: List[ScoreFollower],
+                           audio_path: str,
+                           reference_path: str,
+                           save_results: bool = True) -> Dict[str, EvaluationMetrics]:
         """
         Porównuje wszystkie modele na tym samym utworze.
         

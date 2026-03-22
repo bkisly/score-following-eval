@@ -23,7 +23,7 @@ print(f"Generated audio: {len(audio)/22050:.2f} seconds")
 ```python
 from pathlib import Path
 from evaluation.evaluator import Evaluator
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 import pandas as pd
 
 # Przygotuj listę plików
@@ -42,14 +42,14 @@ evaluator = Evaluator()
 all_results = []
 for audio_path, midi_path in test_files:
     print(f"\nProcessing: {audio_path.name}")
-    
+
     metrics = evaluator.evaluate_single_model(
         model=model,
         audio_path=str(audio_path),
         reference_path=str(midi_path),
         verbose=False
     )
-    
+
     all_results.append({
         'file': audio_path.stem,
         'accuracy': metrics.frame_accuracy,
@@ -59,9 +59,9 @@ for audio_path, midi_path in test_files:
 
 # Stwórz DataFrame z wynikami
 df = pd.DataFrame(all_results)
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("SUMMARY STATISTICS")
-print("="*60)
+print("=" * 60)
 print(df.describe())
 
 # Zapisz do CSV
@@ -74,7 +74,7 @@ df.to_csv('batch_results.csv', index=False)
 import matplotlib.pyplot as plt
 import numpy as np
 from evaluation.evaluator import Evaluator
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 from utils.audio_processing import AudioProcessor, simulate_real_time_input
 from utils.midi_processing import MIDIProcessor
 
@@ -139,13 +139,13 @@ plt.show()
 
 print(f"Mean error: {np.mean(errors):.3f}s")
 print(f"Max error: {np.max(errors):.3f}s")
-print(f"Frames within tolerance: {np.sum(errors <= 0.5)/len(errors):.2%}")
+print(f"Frames within tolerance: {np.sum(errors <= 0.5) / len(errors):.2%}")
 ```
 
 ## 4. Porównanie Features (Chroma vs MFCC vs Mel)
 
 ```python
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 from evaluation.evaluator import Evaluator
 
 # Testuj różne features
@@ -156,25 +156,25 @@ evaluator = Evaluator()
 
 for feature_type in features:
     print(f"\nTesting with {feature_type} features...")
-    
+
     model = DTWModel(
         window_size=100,
         feature_type=feature_type
     )
-    
+
     metrics = evaluator.evaluate_single_model(
         model=model,
         audio_path="audio.wav",
         reference_path="reference.mid",
         verbose=False
     )
-    
+
     results[feature_type] = metrics
 
 # Porównaj
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("FEATURE COMPARISON")
-print("="*60)
+print("=" * 60)
 
 for feature, metrics in results.items():
     print(f"\n{feature.upper()}:")
@@ -393,42 +393,44 @@ import cProfile
 import pstats
 from io import StringIO
 
+
 def profile_model(model, audio_path, reference_path):
     """Profiluj wydajność modelu"""
-    
+
     # Przygotuj
     from utils.audio_processing import simulate_real_time_input, AudioProcessor
-    
+
     processor = AudioProcessor()
     audio, sr = processor.load_audio(audio_path)
     chunks = simulate_real_time_input(audio, chunk_size=2048)
-    
+
     model.load_reference(reference_path)
     model.reset()
-    
+
     # Profiluj
     pr = cProfile.Profile()
     pr.enable()
-    
+
     start_time = time.time()
     for chunk in chunks[:100]:  # Pierwszych 100 chunków
         model.process_frame(chunk, sr)
     elapsed = time.time() - start_time
-    
+
     pr.disable()
-    
+
     # Wyniki
     s = StringIO()
     ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
     ps.print_stats(20)  # Top 20
-    
+
     print(f"\nProcessed 100 chunks in {elapsed:.2f}s")
-    print(f"Average per chunk: {elapsed/100*1000:.2f}ms")
+    print(f"Average per chunk: {elapsed / 100 * 1000:.2f}ms")
     print("\nTop time consumers:")
     print(s.getvalue())
 
+
 # Użycie
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 
 model = DTWModel()
 profile_model(model, "audio.wav", "reference.mid")
@@ -439,7 +441,7 @@ profile_model(model, "audio.wav", "reference.mid")
 ```python
 from itertools import product
 from evaluation.evaluator import Evaluator
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 
 # Parametry do testowania
 window_sizes = [50, 100, 150, 200]
@@ -451,19 +453,19 @@ results = []
 # Grid search
 for window, feature in product(window_sizes, feature_types):
     print(f"\nTesting: window={window}, feature={feature}")
-    
+
     model = DTWModel(
         window_size=window,
         feature_type=feature
     )
-    
+
     metrics = evaluator.evaluate_single_model(
         model=model,
         audio_path="audio.wav",
         reference_path="reference.mid",
         verbose=False
     )
-    
+
     results.append({
         'window_size': window,
         'feature_type': feature,
@@ -474,12 +476,13 @@ for window, feature in product(window_sizes, feature_types):
 
 # Znajdź najlepszą konfigurację
 import pandas as pd
+
 df = pd.DataFrame(results)
 df_sorted = df.sort_values('accuracy', ascending=False)
 
-print("\n" + "="*60)
+print("\n" + "=" * 60)
 print("BEST CONFIGURATIONS")
-print("="*60)
+print("=" * 60)
 print(df_sorted.head(5))
 
 # Zapisz

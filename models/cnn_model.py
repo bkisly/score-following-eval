@@ -19,7 +19,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.base_model import BaseScoreFollower
+from models.score_follower import ScoreFollower
 from utils.audio_processing import AudioProcessor
 from utils.midi_processing import MIDIProcessor
 
@@ -69,7 +69,7 @@ class CNNEncoder(nn.Module):
         return x
 
 
-class HeurMiTModel(BaseScoreFollower):
+class HeurMiTModel(ScoreFollower):
     """
     Model CNN inspirowany projektem HeurMiT.
     

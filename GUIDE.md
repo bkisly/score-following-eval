@@ -119,7 +119,7 @@ Dzięki temu możesz łatwo wymieniać modele bez zmiany kodu ewaluacji.
 Otwórz Python:
 
 ```python
-from models.dtw_model import DTWModel
+from models.otw_model import DTWModel
 
 # Stwórz model
 model = DTWModel(window_size=100)
@@ -162,7 +162,7 @@ python experiments/run_comparison.py audio.wav reference.mid --tempo-test
 ### Podstawowy Workflow
 
 ```python
-from models.dtw_model import DTWModel, OnlineTimeWarping
+from models.otw_model import DTWModel, OnlineTimeWarping
 from evaluation.evaluator import Evaluator
 
 # 1. Stwórz ewaluator

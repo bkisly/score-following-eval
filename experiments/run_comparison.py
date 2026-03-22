@@ -10,7 +10,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.dtw_model import DTWModel, OnlineTimeWarping
+from models.otw_model import DTWModel, OnlineTimeWarping
 from models.cnn_model import HeurMiTModel
 from models.cyolo_model import CYOLOModel
 from evaluation.evaluator import Evaluator

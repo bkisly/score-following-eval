@@ -41,10 +41,10 @@ _MISSING = object()
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from models.base_model import BaseScoreFollower
+from models.score_follower import ScoreFollower
 
 
-class CYOLOModel(BaseScoreFollower):
+class CYOLOModel(ScoreFollower):
     """
     Real-time score following binding for the pretrained CYOLO-SB+A model.
 

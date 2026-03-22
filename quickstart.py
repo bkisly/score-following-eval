@@ -4,7 +4,7 @@ QUICKSTART - Najprostszy możliwy przykład użycia platformy
 Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 """
 
-from models.dtw_model import OTWModel
+from models.otw_model import OTWModel
 from models.cyolo_model import CYOLOModel
 from evaluation.evaluator import Evaluator
 

@@ -2,6 +2,7 @@
 Moduł definiujący metryki ewaluacji dla systemów śledzenia partytury.
 Bazuje na metrykach z literatury naukowej.
 """
+from enum import Enum
 
 import numpy as np
 from typing import List, Dict, Tuple
@@ -61,6 +62,14 @@ Tempo Robustness:     {self.tempo_robustness:.2%}
 Error Recovery:       {self.error_recovery_time:.3f}s
 Correct/Total:        {self.correct_frames}/{self.total_frames}
 """
+
+
+class MetricKeys(str, Enum):
+    ACCURACY = "accuracy"
+    MEAN_ERROR = "mean_error"
+    STD_ERROR = "std_error"
+    LATENCY = "latency"
+    TEMPO_ROBUSTNESS = "tempo_robustness"
 
 
 class MetricsCalculator:
