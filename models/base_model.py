@@ -26,6 +26,9 @@ class BaseScoreFollower(ABC):
         self.is_trained = False
         self.reference_score = None  # Partytura referencyjna
         self.current_position = 0     # Aktualna pozycja w utworze
+
+    def __eq__(self, other):
+        return self.name == other.name
         
     @abstractmethod
     def load_reference(self, reference_path: str) -> None:
