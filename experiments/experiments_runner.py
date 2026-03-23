@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 
 from evaluation.evaluator import Evaluator
 from evaluation.data import ExperimentVariation, Piece
@@ -11,23 +11,48 @@ class ExperimentsRunner:
         self.evaluator = evaluator
         self.models = models
 
-    def test_single_metric(self, metric_key: MetricKeys, pieces: List[Piece]) -> dict[ScoreFollower, float]:
+    def test_single_metric(self, metric_key: MetricKeys, pieces: List[Piece]) -> Dict[ScoreFollower, float]:
+        metrics = self._test_average_metrics(pieces)
+        results_for_metric: Dict[ScoreFollower, float] = {}
+
+        for model in metrics:
+            results_for_metric[model] = metrics[model].to_dict()[metric_key]
+
+        return results_for_metric
+
+    def test_tempo_robustness(self, pieces: List[Piece]) -> Dict[ScoreFollower, List[ExperimentVariation]]:
         pass
 
-    def test_tempo_robustness(self, pieces: List[Piece]) -> dict[ScoreFollower, List[ExperimentVariation]]:
+    def test_noise_robustness(self, pieces: List[Piece]) -> Dict[ScoreFollower, List[ExperimentVariation]]:
         pass
 
-    def test_noise_robustness(self, pieces: List[Piece]) -> dict[ScoreFollower, List[ExperimentVariation]]:
+    def test_pitch_robustness(self, pieces: List[Piece]) -> Dict[ScoreFollower, List[ExperimentVariation]]:
         pass
 
-    def test_pitch_robustness(self, pieces: List[Piece]) -> dict[ScoreFollower, List[ExperimentVariation]]:
+    def test_technical_difficulty_robustness(self, pieces: List[Piece]) -> Dict[ScoreFollower, EvaluationMetrics]:
         pass
 
-    def test_technical_difficulty_robustness(self, pieces: List[Piece]) -> dict[ScoreFollower, EvaluationMetrics]:
+    def test_artistic_figures_robustness(self, pieces: List[Piece]) -> Dict[ScoreFollower, EvaluationMetrics]:
         pass
 
-    def test_artistic_figures_robustness(self, pieces: List[Piece]) -> dict[ScoreFollower, EvaluationMetrics]:
+    def test_recovery_time(self, pieces: List[Piece]) -> Dict[ScoreFollower, Dict[int, float]]:
         pass
 
-    def test_recovery_time(self, pieces: List[Piece]) -> dict[ScoreFollower, dict[int, float]]:
-        pass
+    def _test_average_metrics(self, pieces: List[Piece]) -> Dict[ScoreFollower, EvaluationMetrics]:
+        results = {}
+
+        for model in self.models:
+            results[model] = []
+
+        for piece in pieces:
+            evaluation_results = self.evaluator.compare_all_models(
+                self.models, piece.audio_path, piece.midi_path, save_results=False)
+
+            for key in evaluation_results:
+                results[key].append(evaluation_results)
+
+        calculated_results = {}
+        for key in results:
+            calculated_results[key] = EvaluationMetrics.avg(results[key])
+
+        return calculated_results

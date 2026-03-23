@@ -2,11 +2,11 @@
 Moduł definiujący metryki ewaluacji dla systemów śledzenia partytury.
 Bazuje na metrykach z literatury naukowej.
 """
+from dataclasses import dataclass
 from enum import Enum
+from typing import List, Dict, Self
 
 import numpy as np
-from typing import List, Dict, Tuple
-from dataclasses import dataclass
 
 
 @dataclass
@@ -35,13 +35,13 @@ class EvaluationMetrics:
     def to_dict(self) -> Dict:
         """Konwersja do słownika."""
         return {
-            'frame_accuracy': self.frame_accuracy,
-            'mean_error': self.mean_error,
+            MetricKeys.ACCURACY: self.frame_accuracy,
+            MetricKeys.MEAN_ERROR: self.mean_error,
             'median_error': self.median_error,
-            'std_error': self.std_error,
-            'mean_latency': self.mean_latency,
+            MetricKeys.STD_ERROR: self.std_error,
+            MetricKeys.MEAN_LATENCY: self.mean_latency,
             'max_latency': self.max_latency,
-            'tempo_robustness': self.tempo_robustness,
+            MetricKeys.TEMPO_ROBUSTNESS: self.tempo_robustness,
             'error_recovery_time': self.error_recovery_time,
             'total_frames': self.total_frames,
             'correct_frames': self.correct_frames
@@ -63,12 +63,43 @@ Error Recovery:       {self.error_recovery_time:.3f}s
 Correct/Total:        {self.correct_frames}/{self.total_frames}
 """
 
+    def __add__(self, other) -> Self:
+        return EvaluationMetrics(
+            frame_accuracy=self.frame_accuracy + other.frame_accuracy,
+            mean_error=self.mean_error + other.mean_error,
+            median_error=self.median_error + other.median_error,
+            std_error=self.std_error + other.std_error,
+            mean_latency=self.mean_latency + other.mean_latency,
+            max_latency=self.max_latency + other.max_latency,
+            tempo_robustness=self.tempo_robustness + other.tempo_robustness,
+            error_recovery_time=self.error_recovery_time + other.error_recovery_time,
+            total_frames=self.total_frames + other.total_frames,
+            correct_frames=self.correct_frames + other.correct_frames
+        )
+
+    @classmethod
+    def avg(cls, metrics: List[Self]) -> Self:
+        aggregated_metrics: Self = sum(metrics)
+        metrics_len = len(metrics)
+        return EvaluationMetrics(
+            frame_accuracy=aggregated_metrics.frame_accuracy / metrics_len,
+            mean_error=aggregated_metrics.mean_error / metrics_len,
+            median_error=aggregated_metrics.median_error / metrics_len,
+            std_error=aggregated_metrics.std_error / metrics_len,
+            mean_latency=aggregated_metrics.mean_latency / metrics_len,
+            max_latency=aggregated_metrics.max_latency / metrics_len,
+            tempo_robustness=aggregated_metrics.tempo_robustness / metrics_len,
+            error_recovery_time=aggregated_metrics.error_recovery_time / metrics_len,
+            total_frames=round(aggregated_metrics.total_frames / metrics_len),
+            correct_frames=round(aggregated_metrics.correct_frames / metrics_len)
+        )
+
 
 class MetricKeys(str, Enum):
-    ACCURACY = "accuracy"
+    ACCURACY = "frame_accuracy"
     MEAN_ERROR = "mean_error"
     STD_ERROR = "std_error"
-    LATENCY = "latency"
+    MEAN_LATENCY = "mean_latency"
     TEMPO_ROBUSTNESS = "tempo_robustness"
 
 
