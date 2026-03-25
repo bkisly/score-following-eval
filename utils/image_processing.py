@@ -49,7 +49,7 @@ import shutil
 import numpy as np
 from pathlib import Path
 from PIL import Image
-
+from sympy import vring
 
 # ---------------------------------------------------------------------------
 # CONFIG
@@ -142,7 +142,7 @@ def find_musescore() -> str:
 # STAGE 1b: MIDI → MusicXML  (via MuseScore)
 # ---------------------------------------------------------------------------
 
-def midi_to_musicxml(midi_path: str, output_dir: str) -> str:
+def midi_to_musicxml(midi_path: str, output_dir: str, verbose: bool = False) -> str:
     """
     Export a MIDI file to uncompressed MusicXML using MuseScore.
 
@@ -162,7 +162,8 @@ def midi_to_musicxml(midi_path: str, output_dir: str) -> str:
     mxl_path = os.path.join(output_dir, "sheet.musicxml")
 
     cmd    = [mscore, midi_path, "-o", mxl_path]
-    print(f"[1a] MuseScore → MusicXML: {' '.join(cmd)}")
+    if verbose:
+        print(f"[1a] MuseScore → MusicXML: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
 
@@ -179,7 +180,8 @@ def midi_to_musicxml(midi_path: str, output_dir: str) -> str:
             f"Stderr: {result.stderr.strip()}"
         )
 
-    print(f"[1a] MusicXML written to: {mxl_path}")
+    if verbose:
+        print(f"[1a] MusicXML written to: {mxl_path}")
     return mxl_path
 
 
@@ -217,7 +219,7 @@ def _find_musicxml2ly() -> tuple[str, str]:
     return sys.executable, m2l   # fall back to project venv Python
 
 
-def musicxml_to_ly(mxl_path: str, output_dir: str) -> str:
+def musicxml_to_ly(mxl_path: str, output_dir: str, verbose: bool = False) -> str:
     """
     Convert a MusicXML file to LilyPond source (.ly) using musicxml2ly.
 
@@ -237,7 +239,8 @@ def musicxml_to_ly(mxl_path: str, output_dir: str) -> str:
     ly_path = os.path.join(output_dir, "sheet.ly")
 
     cmd    = [python_exe, musicxml2ly_script, "-o", ly_path, mxl_path]
-    print(f"[1b] musicxml2ly: {' '.join(cmd)}")
+    if verbose:
+        print(f"[1b] musicxml2ly: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
 
@@ -252,11 +255,12 @@ def musicxml_to_ly(mxl_path: str, output_dir: str) -> str:
             f"Stderr: {result.stderr.strip()}"
         )
 
-    print(f"[1b] LilyPond source written to: {ly_path}")
+    if verbose:
+        print(f"[1b] LilyPond source written to: {ly_path}")
     return ly_path
 
 
-def midi_to_ly(midi_path: str, output_dir: str) -> str:
+def midi_to_ly(midi_path: str, output_dir: str, verbose: bool = False) -> str:
     """
     Full MIDI → LilyPond source pipeline.
 
@@ -266,15 +270,15 @@ def midi_to_ly(midi_path: str, output_dir: str) -> str:
     quantization). musicxml2ly handles the MusicXML → LilyPond conversion
     (correct voice separation, matching MSMD rendering style).
     """
-    mxl_path = midi_to_musicxml(midi_path, output_dir)
-    return musicxml_to_ly(mxl_path, output_dir)
+    mxl_path = midi_to_musicxml(midi_path, output_dir, verbose=verbose)
+    return musicxml_to_ly(mxl_path, output_dir, verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
 # STAGE 1c: LilyPond source → PNG pages
 # ---------------------------------------------------------------------------
 
-def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> list[str]:
+def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150, verbose: bool = False) -> list[str]:
     """
     Render a LilyPond .ly file to one PNG image per page.
 
@@ -308,7 +312,8 @@ def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> 
         ly_path,
     ]
 
-    print(f"[1c] LilyPond: {' '.join(cmd)}")
+    if verbose:
+        print(f"[1c] LilyPond: {' '.join(cmd)}")
     result = subprocess.run(
         cmd, capture_output=True, text=True, cwd=output_dir,
         encoding="utf-8", errors="replace",
@@ -334,14 +339,15 @@ def ly_to_sheet_images(ly_path: str, output_dir: str, resolution: int = 150) -> 
             f"Stderr: {result.stderr.strip()[-300:]}"
         )
 
-    print(f"[1b] Generated {len(image_paths)} page image(s).")
+    if verbose:
+        print(f"[1b] Generated {len(image_paths)} page image(s).")
     return image_paths
 
 
-def midi_to_sheet_images(midi_path: str, output_dir: str, resolution: int = 150) -> list[str]:
+def midi_to_sheet_images(midi_path: str, output_dir: str, resolution: int = 150, verbose: bool = False) -> list[str]:
     """MIDI → PNG pages via LilyPond. Calls midi_to_ly then ly_to_sheet_images."""
-    ly_path = midi_to_ly(midi_path, output_dir)
-    return ly_to_sheet_images(ly_path, output_dir, resolution=resolution)
+    ly_path = midi_to_ly(midi_path, output_dir, verbose=verbose)
+    return ly_to_sheet_images(ly_path, output_dir, resolution=resolution, verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +358,7 @@ def images_to_numpy(
     image_paths: list[str],
     target_size: tuple[int, int] = TARGET_SIZE,
     grayscale:   bool            = GRAYSCALE,
+    verbose: bool = False,
 ) -> tuple[list[np.ndarray], list[float]]:
     """
     Load and resize PNG images into normalised numpy arrays.
@@ -367,8 +374,9 @@ def images_to_numpy(
         original_width / max(original_width, original_height) per page.
         Used to correct YOLO x predictions for padding offset.
     """
-    print(f"[2/3] Converting {len(image_paths)} image(s) to numpy "
-          f"({'grayscale' if grayscale else 'RGB'}, {target_size})...")
+    if verbose:
+        print(f"[2/3] Converting {len(image_paths)} image(s) to numpy "
+              f"({'grayscale' if grayscale else 'RGB'}, {target_size})...")
 
     matrices: list[np.ndarray] = []
     cwfs:     list[float]      = []
@@ -401,10 +409,12 @@ def images_to_numpy(
         img = img.resize(target_size, resample=Image.LANCZOS)
         arr = np.array(img, dtype=np.float32) / 255.0
         matrices.append(arr)
-        print(f"    Page {i+1}: shape={arr.shape}, cwf={cwf:.3f}, "
-              f"min={arr.min():.3f}, max={arr.max():.3f}")
+        if verbose:
+            print(f"    Page {i+1}: shape={arr.shape}, cwf={cwf:.3f}, "
+                  f"min={arr.min():.3f}, max={arr.max():.3f}")
 
-    print(f"[2/3] Done.")
+    if verbose:
+        print(f"[2/3] Done.")
     return matrices, cwfs
 
 
@@ -441,6 +451,7 @@ def extract_page_timestamps(
     midi_path: str,
     n_pages:   int,
     measure_time_map: "dict[int, float] | None" = None,
+    verbose: bool = False,
 ) -> list[float]:
     """
     Start time in seconds of each page. timestamps[0] is always 0.0.
@@ -460,7 +471,8 @@ def extract_page_timestamps(
         for m in breaks
     ]
     timestamps[0] = 0.0
-    print(f"[3/3] Page timestamps (s): {[round(t, 3) for t in timestamps]}")
+    if verbose:
+        print(f"[3/3] Page timestamps (s): {[round(t, 3) for t in timestamps]}")
     return timestamps
 
 
@@ -519,6 +531,7 @@ def midi_to_matrices(
     keep_images:       bool            = True,
     return_timestamps: bool            = False,
     resolution:        int             = 150,
+    verbose: bool = False,
 ) -> "list[np.ndarray] | tuple[list[np.ndarray], list[float], list[float], list]":
     """
     End-to-end: MIDI → LilyPond → PNG → numpy matrices.
@@ -531,15 +544,16 @@ def midi_to_matrices(
     return_timestamps=True
         (matrices, page_timestamps, content_width_fractions, page_measure_interpolators)
     """
-    print(f"\n{'='*55}")
-    print(f"  MIDI → Matrices Pipeline  (LilyPond)")
-    print(f"  Input : {midi_path}")
-    print(f"  Output: {target_size[0]}x{target_size[1]} "
-          f"{'grayscale' if grayscale else 'RGB'}, {resolution} DPI")
-    print(f"{'='*55}\n")
+    if verbose:
+        print(f"\n{'='*55}")
+        print(f"  MIDI → Matrices Pipeline  (LilyPond)")
+        print(f"  Input : {midi_path}")
+        print(f"  Output: {target_size[0]}x{target_size[1]} "
+              f"{'grayscale' if grayscale else 'RGB'}, {resolution} DPI")
+        print(f"{'='*55}\n")
 
-    image_paths    = midi_to_sheet_images(midi_path, output_dir, resolution)
-    matrices, cwfs = images_to_numpy(image_paths, target_size, grayscale)
+    image_paths    = midi_to_sheet_images(midi_path, output_dir, resolution, verbose=verbose)
+    matrices, cwfs = images_to_numpy(image_paths, target_size, grayscale, verbose=verbose)
 
     page_timestamps = page_measure_interpolators = None
 
@@ -547,7 +561,7 @@ def midi_to_matrices(
         measure_time_map    = _build_measure_time_map(midi_path)
         page_break_measures = _infer_page_break_measures(len(matrices), measure_time_map)
         page_timestamps     = extract_page_timestamps(
-            midi_path, n_pages=len(matrices), measure_time_map=measure_time_map
+            midi_path, n_pages=len(matrices), measure_time_map=measure_time_map, verbose=verbose
         )
         page_measure_interpolators = build_page_measure_interpolators(
             page_break_measures, measure_time_map, n_pages=len(matrices)
@@ -555,11 +569,13 @@ def midi_to_matrices(
 
     if not keep_images:
         shutil.rmtree(output_dir, ignore_errors=True)
-        print(f"Cleaned up '{output_dir}'.")
-    else:
+        if verbose:
+            print(f"Cleaned up '{output_dir}'.")
+    elif verbose:
         print(f"Intermediate files kept in '{output_dir}'.")
 
-    print(f"\n✓ Pipeline complete: {len(matrices)} page(s).\n")
+    if verbose:
+        print(f"\n✓ Pipeline complete: {len(matrices)} page(s).\n")
 
     if return_timestamps:
         return matrices, page_timestamps, cwfs, page_measure_interpolators

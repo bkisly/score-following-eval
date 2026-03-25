@@ -123,8 +123,6 @@ class OTWModel(ScoreFollower):
         Extracts CENS features at self.sr using the same ChromaMaker that
         will be used for live audio, then initialises the OTW cost matrix.
         """
-        print(f"[OTWModel] Loading reference: {reference_path}")
-
         audio = self._load_audio(reference_path)
 
         self._ref_cens      = audio_to_np_cens(audio, self.sr, self.n_fft, self.ref_hop_len)
@@ -133,11 +131,6 @@ class OTWModel(ScoreFollower):
         self.reference_score = reference_path
 
         self._init_runtime_state()
-
-        print(
-            f"[OTWModel] Reference loaded: {self._n_ref_frames} frames, "
-            f"duration: {self._ref_duration:.2f}s"
-        )
 
     def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
@@ -191,7 +184,6 @@ class OTWModel(ScoreFollower):
         self.current_position = 0.0
         if self._ref_cens is not None:
             self._init_runtime_state()
-        print("[OTWModel] Reset.")
 
     def requires_training(self) -> bool:
         return False

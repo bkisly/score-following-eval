@@ -194,7 +194,8 @@ class Evaluator:
                            models: List[ScoreFollower],
                            audio_path: str,
                            reference_path: str,
-                           save_results: bool = True) -> Dict[str, EvaluationMetrics]:
+                           save_results: bool = True,
+                           verbose: bool = False) -> Dict[str, EvaluationMetrics]:
         """
         Porównuje wszystkie modele na tym samym utworze.
         
@@ -203,16 +204,18 @@ class Evaluator:
             audio_path: Ścieżka do audio
             reference_path: Ścieżka do MIDI
             save_results: Czy zapisać wyniki do pliku
+            verbose: Wyświetl postęp
             
         Returns:
             Dict {model_name: EvaluationMetrics}
         """
         results = {}
-        
-        print(f"\n{'='*70}")
-        print(f"COMPARING {len(models)} MODELS")
-        print(f"Audio: {Path(audio_path).name}")
-        print(f"{'='*70}")
+
+        if verbose:
+            print(f"\n{'='*70}")
+            print(f"COMPARING {len(models)} MODELS")
+            print(f"Audio: {Path(audio_path).name}")
+            print(f"{'='*70}")
         
         for model in models:
             # Sprawdź czy model wymaga treningu
@@ -222,16 +225,17 @@ class Evaluator:
             
             # Ewaluuj
             metrics = self.evaluate_single_model(
-                model, audio_path, reference_path, verbose=True
+                model, audio_path, reference_path, verbose=verbose
             )
             
             results[model.name] = metrics
         
         # Wyświetl porównanie
-        print(f"\n{'='*70}")
-        print("COMPARISON RESULTS")
-        print(f"{'='*70}")
-        print(compare_models(results))
+        if verbose:
+            print(f"\n{'='*70}")
+            print("COMPARISON RESULTS")
+            print(f"{'='*70}")
+            print(compare_models(results))
         
         # Zapisz wyniki
         if save_results:

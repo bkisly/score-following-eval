@@ -1,22 +1,25 @@
 import json
 import csv
 from pathlib import Path
-from typing import List
 
 from evaluation.data import Piece
 
 
 def get_maestro_test_pairs(
     dataset_path: str,
-    max_pieces: int | None = 25,
-) -> List[Piece]:
+    max_pieces: int | None = None,
+    max_duration: float | None = None,
+) -> list[Piece]:
     """
     Returns (midi_file, audio_file) path pairs for the test split of the MAESTRO dataset.
 
     Args:
-        dataset_path: Path to the root directory of the downloaded MAESTRO dataset.
-        max_pieces:   If set, returns only the first N pairs, ordered deterministically
-                      by (midi_filename, audio_filename). If None, all test pairs are returned.
+        dataset_path:  Path to the root directory of the downloaded MAESTRO dataset.
+        max_pieces:    If set, returns only the first N pairs, ordered deterministically
+                       by (midi_filename, audio_filename). If None, all test pairs are returned.
+        max_duration:  If set, only pairs whose duration (in seconds) is <= this value
+                       are included. Filtering is applied before the max_pieces slice
+                       so that the piece count is always respected.
 
     Returns:
         List of (midi_path, audio_path) tuples with absolute paths.
@@ -34,6 +37,7 @@ def get_maestro_test_pairs(
             (
                 meta["midi_filename"][key],
                 meta["audio_filename"][key],
+                float(meta["duration"][key]),
             )
             for key, split in meta["split"].items()
             if split == "test"
@@ -43,7 +47,11 @@ def get_maestro_test_pairs(
         with open(csv_meta, newline="") as f:
             reader = csv.DictReader(f)
             pairs = [
-                (row["midi_filename"], row["audio_filename"])
+                (
+                    row["midi_filename"],
+                    row["audio_filename"],
+                    float(row["duration"]),
+                )
                 for row in reader
                 if row["split"] == "test"
             ]
@@ -54,6 +62,9 @@ def get_maestro_test_pairs(
             "Expected 'maestro-v3.0.0.json' or 'maestro-v3.0.0.csv'."
         )
 
+    if max_duration is not None:
+        pairs = [p for p in pairs if p[2] <= max_duration]
+
     # Sort before slicing to guarantee a stable, deterministic order
     pairs.sort(key=lambda p: (p[0], p[1]))
 
@@ -63,5 +74,5 @@ def get_maestro_test_pairs(
     # Resolve to absolute paths only after filtering/slicing
     return [
         Piece(midi_path=str(dataset_path / midi), audio_path=str(dataset_path / audio))
-        for midi, audio in pairs
+        for midi, audio, _ in pairs
     ]
