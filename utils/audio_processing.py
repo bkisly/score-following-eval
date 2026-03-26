@@ -170,6 +170,9 @@ class AudioProcessor:
         noise = np.random.randn(len(audio))
         augmented = audio + noise_factor * noise
         return augmented
+
+    def pitch_shift(self, audio: np.ndarray, semitones: int) -> np.ndarray:
+        return librosa.effects.pitch_shift(audio, n_steps=semitones, sr=self.sr)
     
     def frames_to_time(self, frame_idx: int) -> float:
         """

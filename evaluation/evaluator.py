@@ -3,7 +3,7 @@ Główny ewaluator - porównuje wszystkie modele na wspólnych danych.
 """
 
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable
 from pathlib import Path
 import json
 from tqdm import tqdm
@@ -49,6 +49,7 @@ class Evaluator:
                               model: ScoreFollower,
                               audio_path: str,
                               reference_path: str,
+                              audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = None,
                               ground_truth_alignment: np.ndarray = None,
                               verbose: bool = True) -> EvaluationMetrics:
         """
@@ -71,6 +72,9 @@ class Evaluator:
         midi = self.midi_processor.load_midi(reference_path)
         audio, sr = self.audio_processor.load_audio(audio_path) if ".mid" not in audio_path \
             else (self.midi_processor.synthesize_audio(midi), 22050)
+
+        if audio_transformator is not None:
+            audio = audio_transformator(audio, self.audio_processor)
         
         # Wczytaj referencję
         model.load_reference(reference_path)
@@ -126,7 +130,8 @@ class Evaluator:
         
         return metrics
 
-    def _generate_ground_truth(self, midi, num_frames, chunk_size=CHUNK_SIZE, sample_rate=SAMPLE_RATE):
+    @staticmethod
+    def _generate_ground_truth(midi, num_frames, chunk_size=CHUNK_SIZE, sample_rate=SAMPLE_RATE):
         """
         Generates simplified ground truth alignment by linear mapping of MIDI file length in seconds
         to the amount of frames in the given audio file.
@@ -194,6 +199,7 @@ class Evaluator:
                            models: List[ScoreFollower],
                            audio_path: str,
                            reference_path: str,
+                           audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = None,
                            save_results: bool = True,
                            verbose: bool = False) -> Dict[str, EvaluationMetrics]:
         """
@@ -225,7 +231,7 @@ class Evaluator:
             
             # Ewaluuj
             metrics = self.evaluate_single_model(
-                model, audio_path, reference_path, verbose=verbose
+                model, audio_path, reference_path, audio_transformator=audio_transformator, verbose=verbose
             )
             
             results[model.name] = metrics
