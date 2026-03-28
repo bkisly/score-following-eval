@@ -15,15 +15,18 @@ class ExperimentsRunner:
         self.evaluator = evaluator
         self.models = models
 
-    def test_tempo_robustness(self, pieces: List[Piece], tempo_shifts: List[float] = None) -> Dict[str, List[ExperimentVariation]]:
+    def test_tempo_robustness(self, pieces: List[Piece], tempo_shifts: List[float] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if tempo_shifts is None:
             tempo_shifts = [i / 10 for i in range(-5, 6)]
 
         for tempo_shift in tempo_shifts:
+            if verbose:
+                print(f"Beginning test for tempo shift {tempo_shift}...")
+
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.time_stretch(a, tempo_shift)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator)
+            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=tempo_shift, result=variation_results[key]))
@@ -45,7 +48,7 @@ class ExperimentsRunner:
 
         return results
 
-    def test_pitch_robustness(self, pieces: List[Piece], semitone_shifts: List[int] = None) -> Dict[str, List[ExperimentVariation]]:
+    def test_pitch_robustness(self, pieces: List[Piece], semitone_shifts: List[int] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if semitone_shifts is None:
@@ -53,7 +56,7 @@ class ExperimentsRunner:
 
         for semitone_shift in semitone_shifts:
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.pitch_shift(a, semitone_shift)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator)
+            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=semitone_shift, result=variation_results[key]))
