@@ -33,13 +33,16 @@ class ExperimentsRunner:
 
         return results
 
-    def test_noise_robustness(self, pieces: List[Piece], noise_factors: List[float] = None) -> Dict[str, List[ExperimentVariation]]:
+    def test_noise_robustness(self, pieces: List[Piece], noise_factors: List[float] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if noise_factors is None:
             noise_factors = [i / 10 for i in range(-5, 6)]
 
         for noise_factor in noise_factors:
+            if verbose:
+                print(f"Beginning test for noise factor {noise_factor}...")
+
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.add_noise(a, noise_factor)
             variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator)
 
@@ -55,6 +58,9 @@ class ExperimentsRunner:
             semitone_shifts = [i for i in range(-5, 6)]
 
         for semitone_shift in semitone_shifts:
+            if verbose:
+                print(f"Beginning test for pitch shift {semitone_shift}...")
+
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.pitch_shift(a, semitone_shift)
             variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
 
@@ -62,12 +68,6 @@ class ExperimentsRunner:
                 results[key].append(ExperimentVariation(factor=semitone_shift, result=variation_results[key]))
 
         return results
-
-    def test_technical_difficulty_robustness(self, pieces: List[Piece]) -> Dict[str, EvaluationMetrics]:
-        pass
-
-    def test_artistic_figures_robustness(self, pieces: List[Piece]) -> Dict[str, EvaluationMetrics]:
-        pass
 
     def test_recovery_time(self, pieces: List[Piece]) -> Dict[str, Dict[int, float]]:
         pass
