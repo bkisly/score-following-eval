@@ -46,7 +46,7 @@ class ExperimentsRunner:
                 print(f"Beginning test for noise factor {noise_factor}...")
 
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.add_noise(a, noise_factor)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator)
+            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=noise_factor, result=variation_results[key]))
