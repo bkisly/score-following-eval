@@ -171,6 +171,16 @@ class AudioProcessor:
         augmented = audio + noise_factor * noise
         return augmented
 
+    def replace_fragment_with_noise(self,
+                                    audio: np.ndarray,
+                                    start_second: int,
+                                    duration: int) -> np.ndarray:
+        noise = np.random.randn(duration * self.sr)
+        start_sample = start_second * self.sr
+        end_sample = start_sample + duration * self.sr
+        audio[start_sample:end_sample] = noise
+        return audio
+
     def pitch_shift(self, audio: np.ndarray, semitones: int) -> np.ndarray:
         return librosa.effects.pitch_shift(audio, n_steps=semitones, sr=self.sr)
     

@@ -1,8 +1,10 @@
+from itertools import batched
 from typing import List, Dict, Callable
 
 import numpy as np
 from tqdm import tqdm
 
+import evaluation.evaluator
 from evaluation.evaluator import Evaluator
 from evaluation.data import ExperimentVariation, Piece
 from models.score_follower import ScoreFollower
@@ -69,8 +71,36 @@ class ExperimentsRunner:
 
         return results
 
-    def test_recovery_time(self, pieces: List[Piece]) -> Dict[str, Dict[int, float]]:
-        pass
+    def test_recovery_time(self, pieces: List[Piece], noise_start: int = 10, noise_duration: int = 3, verbose: bool = False) -> Dict[str, Dict[int, float]]:
+        results = {model.name: {} for model in self.models}
+        errors = self._create_dict_for_models()
+        models_dict = {model.name: model for model in self.models}
+        audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = \
+            lambda a, ap: ap.replace_fragment_with_noise(a, noise_start, noise_duration)
+
+        iterator = tqdm(enumerate(pieces), total=len(pieces), disable=not verbose)
+        for i, piece in iterator:
+            iterator.set_description(f"Starting evaluation of piece no. {i+1}... "
+                                     f"(Path to MIDI: {piece.midi_path}, "
+                                     f"path to audio: {piece.audio_path})")
+
+            for model_name in results:
+                predictions, _, ground_truth_values = self.evaluator.evaluate_model_per_chunk(
+                    models_dict[model_name],
+                    piece.audio_path,
+                    piece.midi_path,
+                    audio_transformator=audio_transformator,
+                    verbose=False
+                )
+
+                errors[model_name].append(
+                    [abs(prediction - ground_truth) for prediction, ground_truth in zip(predictions, ground_truth_values)]
+                )
+
+        for model_name in errors:
+            results[model_name] = {i: sum(chunk_errors) / len(chunk_errors) for i, chunk_errors in enumerate(zip(*errors[model_name]))}
+
+        return results
 
     def test_average_metrics(
             self,
@@ -84,7 +114,7 @@ class ExperimentsRunner:
         for i, piece in iterator:
             iterator.set_description(f"Evaluating piece no. {i+1}... "
                                      f"(Path to MIDI: {piece.midi_path}, "
-                                     f"path to audio: {piece.audio_path}, )")
+                                     f"path to audio: {piece.audio_path})")
 
             evaluation_results = self.evaluator.compare_all_models(
                 self.models, piece.audio_path, piece.midi_path, audio_transformator=audio_transformator, save_results=False)
@@ -99,9 +129,4 @@ class ExperimentsRunner:
         return calculated_results
 
     def _create_dict_for_models(self) -> Dict[str, List]:
-        results = {}
-
-        for model in self.models:
-            results[model.name] = []
-
-        return results
+        return {model.name: [] for model in self.models}

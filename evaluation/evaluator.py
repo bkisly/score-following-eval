@@ -3,9 +3,11 @@ Główny ewaluator - porównuje wszystkie modele na wspólnych danych.
 """
 
 import numpy as np
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Tuple
 from pathlib import Path
 import json
+
+from numba.core.types import none
 from tqdm import tqdm
 
 import sys
@@ -44,6 +46,61 @@ class Evaluator:
         self.midi_processor = MIDIProcessor()
         
         print(f"Evaluator initialized (tolerance: {tolerance_seconds}s)")
+
+    def evaluate_model_per_chunk(self, model: ScoreFollower,
+                                 audio_path: str,
+                                 reference_path: str,
+                                 audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = None,
+                                 ground_truth_alignment: np.ndarray = None,
+                                 verbose: bool = True):
+        # Wczytaj audio
+        midi = self.midi_processor.load_midi(reference_path)
+        audio, sr = self.audio_processor.load_audio(audio_path) if ".mid" not in audio_path \
+            else (self.midi_processor.synthesize_audio(midi), SAMPLE_RATE)
+
+        if audio_transformator is not None:
+            audio = audio_transformator(audio, self.audio_processor)
+
+        # Wczytaj referencję
+        model.load_reference(reference_path)
+        model.reset()
+
+        # Symuluj real-time processing
+        chunks = simulate_real_time_input(
+            audio,
+            chunk_size=CHUNK_SIZE,
+            sr=sr
+        )
+
+        number_of_frames = len(chunks)
+
+        if ground_truth_alignment is None:
+            ground_truth_alignment = self._generate_ground_truth(midi, number_of_frames)
+
+        # Przetwarzaj chunk po chunku
+        predictions = []
+        latencies = []
+
+        iterator = tqdm(enumerate(chunks), total=number_of_frames, disable=not verbose)
+
+        for i, chunk in iterator:
+            # Predykcja
+            result = model.process_frame(chunk, sr)
+
+            predictions.append(result['position'])
+            latencies.append(result['latency'])
+
+            if verbose and i % 50 == 0:
+                iterator.set_description(
+                    f"Position: {result['position']:.2f}s, "
+                    f"Latency: {result['latency']:.1f}ms"
+                )
+
+        # Dopasuj długości (ground truth może być dłuższe)
+        min_len = min(len(predictions), len(ground_truth_alignment))
+        predictions = np.array(predictions[:min_len])
+
+        return predictions, latencies, ground_truth_alignment[:min_len]
     
     def evaluate_single_model(self,
                               model: ScoreFollower,
@@ -67,61 +124,15 @@ class Evaluator:
         """
         if verbose:
             print(f"\nEvaluating {model.name} on {Path(audio_path).name}")
-        
-        # Wczytaj audio
-        midi = self.midi_processor.load_midi(reference_path)
-        audio, sr = self.audio_processor.load_audio(audio_path) if ".mid" not in audio_path \
-            else (self.midi_processor.synthesize_audio(midi), 22050)
 
-        if audio_transformator is not None:
-            audio = audio_transformator(audio, self.audio_processor)
-        
-        # Wczytaj referencję
-        model.load_reference(reference_path)
-        model.reset()
-
-        #audio = self.audio_processor.time_stretch(audio, 0.8)
-        
-        # Symuluj real-time processing
-        chunks = simulate_real_time_input(
-            audio,
-            chunk_size=CHUNK_SIZE,
-            sr=sr
+        predictions, latencies, ground_truth_alignment = self.evaluate_model_per_chunk(
+            model, audio_path, reference_path, audio_transformator, ground_truth_alignment, verbose=verbose
         )
-
-        number_of_frames = len(chunks)
-
-        if ground_truth_alignment is None:
-            ground_truth_alignment = self._generate_ground_truth(midi, number_of_frames)
-        
-        # Przetwarzaj chunk po chunku
-        predictions = []
-        latencies = []
-        
-        iterator = tqdm(enumerate(chunks), total=number_of_frames, disable=not verbose)
-        
-        for i, chunk in iterator:
-            # Predykcja
-            result = model.process_frame(chunk, sr)
-            
-            predictions.append(result['position'])
-            latencies.append(result['latency'])
-            
-            if verbose and i % 50 == 0:
-                iterator.set_description(
-                    f"Position: {result['position']:.2f}s, "
-                    f"Latency: {result['latency']:.1f}ms"
-                )
-        
-        # Dopasuj długości (ground truth może być dłuższe)
-        min_len = min(len(predictions), len(ground_truth_alignment))
-        predictions = np.array(predictions[:min_len])
-        ground_truth = ground_truth_alignment[:min_len]
         
         # Oblicz metryki
         metrics = self.metrics_calculator.calculate_all_metrics(
             predictions=predictions,
-            ground_truth=ground_truth,
+            ground_truth=ground_truth_alignment,
             latencies=latencies
         )
         
