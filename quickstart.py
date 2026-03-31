@@ -3,7 +3,9 @@ QUICKSTART - Najprostszy możliwy przykład użycia platformy
 
 Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 """
+import os
 
+from models.cnn_model import HeurMiTModel
 from models.otw_model import OTWModel
 from models.cyolo_model import CYOLOModel
 from evaluation.evaluator import Evaluator
@@ -31,6 +33,15 @@ def main():
     cyolo = CYOLOModel()
     print(f"  ✓ Created {cyolo.name}")
 
+    HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
+
+    heurMiT = HeurMiTModel()
+    if not os.path.exists(HEURMIT_CHECKPOINT_PATH):
+        heurMiT.train({'dataset_path': BASE_PATH, 'save_path': HEURMIT_CHECKPOINT_PATH})
+
+    heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
+    print(f"  ✓ Created {heurMiT.name}")
+
     # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
     evaluator = Evaluator(tolerance_seconds=0.5)
@@ -39,7 +50,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[otw, cyolo],
+        models=[heurMiT],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True

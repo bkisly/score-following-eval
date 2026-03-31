@@ -450,7 +450,7 @@ class HeurMiTModel(ScoreFollower):
         print(f"[HeurMiT] Found {len(midi_paths)} train-split MIDI files.")
 
         # Pre-load up to 100 piano rolls into memory
-        cache_size = min(len(midi_paths), 100)
+        cache_size = min(len(midi_paths), 500)
         print(f"[HeurMiT] Pre-loading {cache_size} piano rolls …")
         rolls_cache = self._build_piano_roll_cache(midi_paths[:cache_size])
         if not rolls_cache:
