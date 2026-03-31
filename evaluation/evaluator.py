@@ -16,11 +16,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.score_follower import ScoreFollower
 from evaluation.metrics import MetricsCalculator, EvaluationMetrics, compare_models
-from utils.audio_processing import AudioProcessor, simulate_real_time_input
+from utils.audio_processing import AudioProcessor, simulate_real_time_input, create_sliding_window
 from utils.midi_processing import MIDIProcessor
 
 
-CHUNK_SIZE = 2048
+CHUNK_SIZE = 4096
 SAMPLE_RATE = 22050
 
 
@@ -68,8 +68,7 @@ class Evaluator:
         # Symuluj real-time processing
         chunks = simulate_real_time_input(
             audio,
-            chunk_size=CHUNK_SIZE,
-            sr=sr
+            chunk_size=CHUNK_SIZE
         )
 
         number_of_frames = len(chunks)

@@ -242,8 +242,7 @@ def create_sliding_window(audio: np.ndarray,
 
 
 def simulate_real_time_input(audio: np.ndarray,
-                             chunk_size: int = 2048,
-                             sr: int = 22050) -> list:
+                             chunk_size: int = 2048) -> list:
     """
     Symuluje strumień audio w czasie rzeczywistym.
     Przydatne do testowania latencji.

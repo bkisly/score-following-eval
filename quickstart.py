@@ -4,6 +4,7 @@ QUICKSTART - Najprostszy możliwy przykład użycia platformy
 Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
 """
 import os
+import traceback
 
 from models.cnn_model import HeurMiTModel
 from models.otw_model import OTWModel
@@ -50,7 +51,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[heurMiT],
+        models=[otw, cyolo, heurMiT],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
@@ -85,6 +86,7 @@ if __name__ == "__main__":
         print("  2. Create synthetic audio from MIDI (see GUIDE.md)")
         print("  3. Use your own recordings")
         print()
+        traceback.print_exc()
         sys.exit(1)
     except Exception as e:
         print(f"\nERROR: {e}")
@@ -92,4 +94,5 @@ if __name__ == "__main__":
         print("  - README.md")
         print("  - GUIDE.md")
         print("  - notebooks/tutorial.ipynb")
+        traceback.print_exc()
         sys.exit(1)
