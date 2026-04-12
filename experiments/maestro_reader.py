@@ -1,8 +1,9 @@
 import json
 import csv
+import os
 from pathlib import Path
 
-from evaluation.data import Piece
+from evaluation.data import Piece, PieceMetadata
 
 
 def get_maestro_test_pairs(
@@ -73,6 +74,89 @@ def get_maestro_test_pairs(
 
     # Resolve to absolute paths only after filtering/slicing
     return [
-        Piece(midi_path=str(dataset_path / midi), audio_path=str(dataset_path / audio))
+        Piece(midi_path=str(dataset_path / midi), audio_path=str(dataset_path / audio),
+              metadata=get_piece_metadata(str(dataset_path), audio, midi))
         for midi, audio, _ in pairs
     ]
+
+def get_piece_metadata(dataset_path: str, wav_path: str, midi_path: str) -> PieceMetadata:
+    """
+    Retrieve metadata for a MAESTRO piece given its wav and midi paths.
+
+    Args:
+        dataset_path: Root path to the MAESTRO dataset directory.
+        wav_path:     Relative path to the .wav file (as stored in the metadata).
+        midi_path:    Relative path to the .midi/.mid file (as stored in the metadata).
+
+    Returns:
+        PieceMetadata with 'title' and 'composer' fields populated.
+
+    Raises:
+        FileNotFoundError: If no metadata file is found in dataset_path.
+        ValueError:        If no record matches both wav_path and midi_path.
+    """
+    # MAESTRO ships metadata as both JSON and CSV — prefer JSON
+    json_meta = os.path.join(dataset_path, "maestro-v3.0.0.json")
+    csv_meta  = os.path.join(dataset_path, "maestro-v3.0.0.csv")
+
+    if os.path.exists(json_meta):
+        return _lookup_json(json_meta, wav_path, midi_path)
+    elif os.path.exists(csv_meta):
+        return _lookup_csv(csv_meta, wav_path, midi_path)
+    else:
+        raise FileNotFoundError(
+            f"No MAESTRO metadata file found in '{dataset_path}'. "
+            "Expected 'maestro-v3.0.0.json' or 'maestro-v3.0.0.csv'."
+        )
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _normalise(path: str) -> str:
+    """Strip leading slashes / './' so paths compare cleanly."""
+    return path.lstrip("./").lstrip("/")
+
+
+def _match(row_wav: str, row_midi: str, wav_path: str, midi_path: str) -> bool:
+    return (
+        _normalise(row_wav)  == _normalise(wav_path) and
+        _normalise(row_midi) == _normalise(midi_path)
+    )
+
+
+def _lookup_json(meta_path: str, wav_path: str, midi_path: str) -> PieceMetadata:
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # The JSON structure uses parallel arrays keyed by field name
+    audio_filenames = data["audio_filename"]
+    midi_filenames  = data["midi_filename"]
+    titles          = data["canonical_title"]
+    composers       = data["canonical_composer"]
+
+    for idx in range(len(audio_filenames)):
+        idx_str = str(idx)
+        if _match(audio_filenames[idx_str], midi_filenames[idx_str], wav_path, midi_path):
+            return PieceMetadata(
+                title=titles[idx_str],
+                composer=composers[idx_str],
+            )
+
+    raise ValueError(
+        f"No record found for wav='{wav_path}', midi='{midi_path}' in {meta_path}"
+    )
+
+
+def _lookup_csv(meta_path: str, wav_path: str, midi_path: str) -> PieceMetadata:
+    with open(meta_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if _match(row["audio_filename"], row["midi_filename"], wav_path, midi_path):
+                return PieceMetadata(
+                    title=row["canonical_title"],
+                    composer=row["canonical_composer"],
+                )
+
+    raise ValueError(
+        f"No record found for wav='{wav_path}', midi='{midi_path}' in {meta_path}"
+    )

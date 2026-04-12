@@ -1,14 +1,15 @@
-from itertools import batched
+import csv
+from pathlib import Path
 from typing import List, Dict, Callable
 
 import numpy as np
+from numba.core.types import none
 from tqdm import tqdm
 
-import evaluation.evaluator
+from evaluation.data import ExperimentVariation, Piece, EvaluationResult
 from evaluation.evaluator import Evaluator
-from evaluation.data import ExperimentVariation, Piece
+from evaluation.metrics import EvaluationMetrics
 from models.score_follower import ScoreFollower
-from evaluation.metrics import EvaluationMetrics, MetricKeys
 from utils.audio_processing import AudioProcessor
 
 
@@ -17,7 +18,12 @@ class ExperimentsRunner:
         self.evaluator = evaluator
         self.models = models
 
-    def test_tempo_robustness(self, pieces: List[Piece], tempo_shifts: List[float] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
+    def test_tempo_robustness(
+            self,
+            pieces: List[Piece],
+            tempo_shifts: List[float] = None,
+            results_path: str = None,
+            verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if tempo_shifts is None:
@@ -28,14 +34,23 @@ class ExperimentsRunner:
                 print(f"Beginning test for tempo shift {tempo_shift}...")
 
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.time_stretch(a, tempo_shift)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
+            variation_results = self.test_average_metrics(
+                pieces,
+                audio_transformator=audio_transformator,
+                results_path=self._add_to_path_stem(results_path, f"_tempo{tempo_shift}"),
+                verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=tempo_shift, result=variation_results[key]))
 
         return results
 
-    def test_noise_robustness(self, pieces: List[Piece], noise_factors: List[float] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
+    def test_noise_robustness(
+            self,
+            pieces: List[Piece],
+            noise_factors: List[float] = None,
+            results_path: str = None,
+            verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if noise_factors is None:
@@ -46,14 +61,23 @@ class ExperimentsRunner:
                 print(f"Beginning test for noise factor {noise_factor}...")
 
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.add_noise(a, noise_factor)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
+            variation_results = self.test_average_metrics(
+                pieces,
+                audio_transformator=audio_transformator,
+                results_path=self._add_to_path_stem(results_path, f"_noise{noise_factor}"),
+                verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=noise_factor, result=variation_results[key]))
 
         return results
 
-    def test_pitch_robustness(self, pieces: List[Piece], semitone_shifts: List[int] = None, verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
+    def test_pitch_robustness(
+            self,
+            pieces: List[Piece],
+            semitone_shifts: List[int] = None,
+            results_path: str = None,
+            verbose: bool = False) -> Dict[str, List[ExperimentVariation]]:
         results = self._create_dict_for_models()
 
         if semitone_shifts is None:
@@ -64,14 +88,23 @@ class ExperimentsRunner:
                 print(f"Beginning test for pitch shift {semitone_shift}...")
 
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = lambda a, ap: ap.pitch_shift(a, semitone_shift)
-            variation_results = self.test_average_metrics(pieces, audio_transformator=audio_transformator, verbose=verbose)
+            variation_results = self.test_average_metrics(
+                pieces,
+                audio_transformator=audio_transformator,
+                results_path=self._add_to_path_stem(results_path, f"_pitch{semitone_shift}"),
+                verbose=verbose)
 
             for key in variation_results:
                 results[key].append(ExperimentVariation(factor=semitone_shift, result=variation_results[key]))
 
         return results
 
-    def test_recovery_time(self, pieces: List[Piece], noise_start: int = 10, noise_duration: int = 3, verbose: bool = False) -> Dict[str, Dict[int, float]]:
+    def test_recovery_time(
+            self,
+            pieces: List[Piece],
+            noise_start: int = 10,
+            noise_duration: int = 3,
+            verbose: bool = False) -> Dict[str, Dict[int, float]]:
         results = {model.name: {} for model in self.models}
         errors = self._create_dict_for_models()
         models_dict = {model.name: model for model in self.models}
@@ -106,9 +139,10 @@ class ExperimentsRunner:
             self,
             pieces: List[Piece],
             audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = None,
+            results_path: str = None,
             verbose: bool = False
     ) -> Dict[str, EvaluationMetrics]:
-        results = self._create_dict_for_models()
+        results: Dict[str, List[EvaluationResult]] = self._create_dict_for_models()
 
         iterator = tqdm(enumerate(pieces), total=len(pieces), disable=not verbose)
         for i, piece in iterator:
@@ -120,13 +154,37 @@ class ExperimentsRunner:
                 self.models, piece.audio_path, piece.midi_path, audio_transformator=audio_transformator, save_results=False)
 
             for key in evaluation_results:
-                results[key].append(evaluation_results[key])
+                results[key].append(EvaluationResult(piece_metadata=piece.metadata, result=evaluation_results[key]))
 
         calculated_results = {}
         for key in results:
-            calculated_results[key] = EvaluationMetrics.avg(results[key])
+            calculated_results[key] = EvaluationMetrics.avg(list(map(lambda r: r.result, results[key])))
+
+        if results_path is not None:
+            self._dump_results(results_path, results)
 
         return calculated_results
 
     def _create_dict_for_models(self) -> Dict[str, List]:
         return {model.name: [] for model in self.models}
+
+    @staticmethod
+    def _dump_results(path: str, results: Dict[str, List[EvaluationResult]]) -> None:
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["composer", "title", "model_name", *EvaluationMetrics.empty().to_dict().keys()])
+
+            for model_name in results:
+                writer.writerows(map(
+                    lambda r: [r.piece_metadata.composer, r.piece_metadata.title,
+                               model_name, *r.result.to_dict().values()],
+                    results[model_name]
+                ))
+
+    @staticmethod
+    def _add_to_path_stem(path: str, text: str) -> str | None:
+        if path is None:
+            return None
+
+        path_obj = Path(path)
+        return str(path_obj.with_stem(f"{path_obj.stem}{text}"))

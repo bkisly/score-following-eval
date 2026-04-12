@@ -79,7 +79,7 @@ Correct/Total:        {self.correct_frames}/{self.total_frames}
 
     @classmethod
     def avg(cls, metrics: List[Self]) -> Self:
-        aggregated_metrics: Self = sum(metrics, start=EvaluationMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        aggregated_metrics: Self = sum(metrics, start=EvaluationMetrics.empty())
         metrics_len = len(metrics)
         return EvaluationMetrics(
             frame_accuracy=aggregated_metrics.frame_accuracy / metrics_len,
@@ -94,6 +94,9 @@ Correct/Total:        {self.correct_frames}/{self.total_frames}
             correct_frames=round(aggregated_metrics.correct_frames / metrics_len)
         )
 
+    @classmethod
+    def empty(cls) -> Self:
+        return EvaluationMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 class MetricKeys(str, Enum):
     ACCURACY = "frame_accuracy"
