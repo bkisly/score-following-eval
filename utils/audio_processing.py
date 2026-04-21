@@ -279,3 +279,9 @@ if __name__ == "__main__":
     print("AudioProcessor ready to use!")
     print(f"Sample rate: {processor.sr}")
     print(f"Hop length: {processor.hop_length}")
+
+    audio, sr = processor.load_audio(r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mp3")
+    audio = processor.replace_fragment_with_noise(audio, 3, 5)
+    import sounddevice as sd
+    sd.play(audio, sr)
+    sd.wait()

@@ -6,6 +6,7 @@ scipy>=1.10.0
 librosa>=0.10.0
 pretty_midi>=0.2.10
 pyfluidsynth
+sounddevice
 
 # Machine Learning
 torch>=2.0.0

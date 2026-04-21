@@ -27,7 +27,7 @@ class ExperimentsRunner:
         results = self._create_dict_for_models()
 
         if tempo_shifts is None:
-            tempo_shifts = [i / 10 for i in range(-5, 6)]
+            tempo_shifts = [i / 10 for i in range(5, 16)]
 
         for tempo_shift in tempo_shifts:
             if verbose:
@@ -54,7 +54,7 @@ class ExperimentsRunner:
         results = self._create_dict_for_models()
 
         if noise_factors is None:
-            noise_factors = [i / 10 for i in range(-5, 6)]
+            noise_factors = [i / 10 for i in range(0, 10)]
 
         for noise_factor in noise_factors:
             if verbose:
@@ -103,7 +103,7 @@ class ExperimentsRunner:
             self,
             pieces: List[Piece],
             noise_start: int = 10,
-            noise_duration: int = 3,
+            noise_duration: int = 5,
             verbose: bool = False) -> Dict[str, Dict[int, float]]:
         results = {model.name: {} for model in self.models}
         errors = self._create_dict_for_models()
