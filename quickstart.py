@@ -10,6 +10,7 @@ from models.cnn_model import HeurMiTModel
 from models.otw_model import OTWModel
 from models.cyolo_model import CYOLOModel
 from evaluation.evaluator import Evaluator
+from models.transformer_model import TransformerModel
 
 # KROK 1: Ustaw ścieżki do swoich plików
 # ZMIEŃ TE ŚCIEŻKI NA SWOJE!
@@ -28,20 +29,28 @@ def main():
     print("=" * 70)
     
     # KROK 2: Stwórz modele
-    print("\n[1/3] Creating models...")
-    otw = OTWModel()
-    print(f"  ✓ Created {otw.name}")
-    cyolo = CYOLOModel()
-    print(f"  ✓ Created {cyolo.name}")
+    # print("\n[1/3] Creating models...")
+    # otw = OTWModel()
+    # print(f"  ✓ Created {otw.name}")
+    # cyolo = CYOLOModel()
+    # print(f"  ✓ Created {cyolo.name}")
+    #
+    # HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
+    #
+    # heurMiT = HeurMiTModel()
+    # if not os.path.exists(HEURMIT_CHECKPOINT_PATH):
+    #     heurMiT.train({'dataset_path': BASE_PATH, 'save_path': HEURMIT_CHECKPOINT_PATH})
+    #
+    # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
+    # print(f"  ✓ Created {heurMiT.name}")
 
-    HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
+    transformer = TransformerModel()
+    TRANSFORMER_CHECKPOINT_PATH = 'transformer.pth'
 
-    heurMiT = HeurMiTModel()
-    if not os.path.exists(HEURMIT_CHECKPOINT_PATH):
-        heurMiT.train({'dataset_path': BASE_PATH, 'save_path': HEURMIT_CHECKPOINT_PATH})
-
-    heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
-    print(f"  ✓ Created {heurMiT.name}")
+    if os.path.exists(TRANSFORMER_CHECKPOINT_PATH):
+        transformer.load_checkpoint(TRANSFORMER_CHECKPOINT_PATH)
+    else:
+        transformer.train({'save_path': TRANSFORMER_CHECKPOINT_PATH, 'dataset_path': BASE_PATH})
 
     # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
@@ -51,7 +60,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[otw, cyolo, heurMiT],
+        models=[transformer],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
