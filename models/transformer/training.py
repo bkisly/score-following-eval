@@ -8,6 +8,7 @@ import librosa
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from models.transformer.alignment import compute_alignment_logits, select_window
 from models.transformer.config import TransformerConfig
@@ -50,22 +51,91 @@ def _cache_file_name(midi_path: str) -> str:
     return f"{stem}_{key[:12]}.npz"
 
 
+def _cache_config_dict(config: TransformerConfig) -> Dict[str, int]:
+    return {
+        "sample_rate": int(config.sample_rate),
+        "cqt_hop_length": int(config.cqt_hop_length),
+        "cqt_n_bins": int(config.cqt_n_bins),
+        "cqt_bins_per_octave": int(config.cqt_bins_per_octave),
+        "cqt_fmin_midi": int(config.cqt_fmin_midi),
+    }
+
+
+def _read_manifest(manifest_path: Path) -> Dict:
+    if not manifest_path.exists():
+        return {"version": 1, "config": {}, "entries": {}}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"version": 1, "config": {}, "entries": {}}
+
+
+def _write_manifest(manifest_path: Path, manifest: Dict) -> None:
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+
 def prepare_reference_cqt_cache(
     train_entries: List[Tuple[str, str]],
     config: TransformerConfig,
     cache_dir: str,
     model,
-    overwrite: bool = False,
-) -> Dict[str, str]:
+    cache_mode: str = "reuse",
+    show_progress: bool = True,
+) -> Dict[str, object]:
+    """
+    cache_mode:
+        - reuse: use existing cache and build missing files
+        - rebuild: recompute all entries
+        - readonly: use existing cache only, never build missing files
+    """
+    if cache_mode not in {"reuse", "rebuild", "readonly"}:
+        raise ValueError("cache_mode must be one of: reuse, rebuild, readonly")
+
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
+    manifest_path = cache_path / "index.json"
+    manifest = _read_manifest(manifest_path)
+    current_cfg = _cache_config_dict(config)
+    cfg_mismatch = manifest.get("config", {}) not in ({}, current_cfg)
+    if cache_mode == "rebuild" or cfg_mismatch:
+        manifest = {"version": 1, "config": current_cfg, "entries": {}}
+    else:
+        manifest["config"] = current_cfg
 
     index: Dict[str, str] = {}
-    for midi_path, _ in train_entries:
-        out_path = cache_path / _cache_file_name(midi_path)
-        index[midi_path] = str(out_path)
+    reused = 0
+    rebuilt = 0
+    readonly_skipped = 0
+    failed = 0
 
-        if out_path.exists() and not overwrite:
+    iterator = tqdm(
+        train_entries,
+        total=len(train_entries),
+        desc="Building reference CQT cache",
+        disable=not show_progress,
+    )
+    for midi_path, _ in iterator:
+        out_path = cache_path / _cache_file_name(midi_path)
+        midi_key = str(Path(midi_path).resolve())
+        index[midi_key] = str(out_path)
+
+        file_exists = out_path.exists()
+        if file_exists and cache_mode != "rebuild":
+            reused += 1
+            manifest["entries"][midi_key] = str(out_path.name)
+            if show_progress:
+                iterator.set_postfix(
+                    reused=reused, rebuilt=rebuilt, skipped=readonly_skipped, failed=failed
+                )
+            continue
+        if cache_mode == "readonly":
+            readonly_skipped += 1
+            if show_progress:
+                iterator.set_postfix(
+                    reused=reused, rebuilt=rebuilt, skipped=readonly_skipped, failed=failed
+                )
             continue
 
         try:
@@ -82,10 +152,35 @@ def prepare_reference_cqt_cache(
                 hop_length=np.array([ref.hop_length], dtype=np.int32),
                 sample_rate=np.array([ref.sample_rate], dtype=np.int32),
             )
+            rebuilt += 1
+            manifest["entries"][midi_key] = str(out_path.name)
         except Exception:
-            # Skip broken references; they will be ignored in epoch sampling.
+            failed += 1
+            index.pop(midi_key, None)
             continue
-    return index
+        finally:
+            if show_progress:
+                iterator.set_postfix(
+                    reused=reused, rebuilt=rebuilt, skipped=readonly_skipped, failed=failed
+                )
+
+    _write_manifest(manifest_path, manifest)
+    usable = {
+        k: v for k, v in index.items() if Path(v).exists()
+    }
+    stats = {
+        "total_entries": len(train_entries),
+        "usable_entries": len(usable),
+        "reused": reused,
+        "rebuilt": rebuilt,
+        "readonly_skipped": readonly_skipped,
+        "failed": failed,
+        "cache_dir": str(cache_path),
+        "manifest_path": str(manifest_path),
+        "config_mismatch": cfg_mismatch,
+        "cache_mode": cache_mode,
+    }
+    return {"index": usable, "stats": stats}
 
 
 def _load_cached_reference_npz(path: str, model) -> Tuple[torch.Tensor, np.ndarray, int, int]:
@@ -118,7 +213,7 @@ def train_epoch(
 
     for _ in range(samples_per_epoch):
         midi_path, audio_path = train_entries[np.random.randint(len(train_entries))]
-        cache_file = ref_cache_index.get(midi_path)
+        cache_file = ref_cache_index.get(str(Path(midi_path).resolve()))
         if cache_file is None or not Path(cache_file).exists():
             continue
 

@@ -176,6 +176,10 @@ class TransformerModel(ScoreFollower):
         save_path = cfg.get("save_path")
         window_seconds = float(cfg.get("window_seconds", self.config.window_seconds))
         cache_overwrite = bool(cfg.get("cache_overwrite", False))
+        cache_mode = cfg.get("cache_mode")
+        if cache_mode is None:
+            cache_mode = "rebuild" if cache_overwrite else "reuse"
+        show_cache_progress = bool(cfg.get("show_cache_progress", True))
         reference_cache_dir = cfg.get("reference_cache_dir")
         if reference_cache_dir is None:
             reference_cache_dir = mkdtemp(prefix="transformer_ref_cqt_")
@@ -185,15 +189,28 @@ class TransformerModel(ScoreFollower):
             raise RuntimeError("No MAESTRO training entries found.")
 
         print(f"[TransformerModel] Preparing reference CQT cache in: {reference_cache_dir}")
-        ref_cache_index = prepare_reference_cqt_cache(
+        cache_result = prepare_reference_cqt_cache(
             train_entries=train_entries,
             config=self.config,
             cache_dir=reference_cache_dir,
             model=self,
-            overwrite=cache_overwrite,
+            cache_mode=cache_mode,
+            show_progress=show_cache_progress,
+        )
+        ref_cache_index = cache_result["index"]
+        cache_stats = cache_result["stats"]
+        print(
+            "[TransformerModel] Cache summary: "
+            f"usable={cache_stats['usable_entries']}/{cache_stats['total_entries']}, "
+            f"reused={cache_stats['reused']}, rebuilt={cache_stats['rebuilt']}, "
+            f"skipped={cache_stats['readonly_skipped']}, failed={cache_stats['failed']}, "
+            f"mode={cache_stats['cache_mode']}"
         )
         if not ref_cache_index:
-            raise RuntimeError("Reference CQT cache is empty. Cannot start training.")
+            raise RuntimeError(
+                "Reference CQT cache has no usable entries. "
+                f"mode={cache_mode}, cache_dir={reference_cache_dir}"
+            )
 
         optimizer = torch.optim.AdamW(
             self.parameters_for_training(),
