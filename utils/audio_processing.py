@@ -171,14 +171,13 @@ class AudioProcessor:
         augmented = audio + noise_factor * noise
         return augmented
 
-    def replace_fragment_with_noise(self,
-                                    audio: np.ndarray,
-                                    start_second: int,
-                                    duration: int) -> np.ndarray:
-        noise = np.random.randn(duration * self.sr)
+    def replace_fragment_with_silence(self,
+                                      audio: np.ndarray,
+                                      start_second: int,
+                                      duration: int) -> np.ndarray:
         start_sample = start_second * self.sr
         end_sample = start_sample + duration * self.sr
-        audio[start_sample:end_sample] = noise
+        audio[start_sample:end_sample] = audio[:(duration * self.sr)]
         return audio
 
     def pitch_shift(self, audio: np.ndarray, semitones: int) -> np.ndarray:
@@ -281,7 +280,7 @@ if __name__ == "__main__":
     print(f"Hop length: {processor.hop_length}")
 
     audio, sr = processor.load_audio(r"C:\Users\bkisl\Desktop\chopin-etude-op10-no4.mp3")
-    audio = processor.replace_fragment_with_noise(audio, 3, 5)
+    audio = processor.replace_fragment_with_silence(audio, 10, 5)
     import sounddevice as sd
     sd.play(audio, sr)
     sd.wait()

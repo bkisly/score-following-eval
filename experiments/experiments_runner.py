@@ -102,14 +102,14 @@ class ExperimentsRunner:
     def test_recovery_time(
             self,
             pieces: List[Piece],
-            noise_start: int = 10,
-            noise_duration: int = 5,
+            noise_start: int = 30,
+            noise_duration: int = 15,
             verbose: bool = False) -> Dict[str, Dict[int, float]]:
         results = {model.name: {} for model in self.models}
         errors = self._create_dict_for_models()
         models_dict = {model.name: model for model in self.models}
         audio_transformator: Callable[[np.ndarray, AudioProcessor], np.ndarray] = \
-            lambda a, ap: ap.replace_fragment_with_noise(a, noise_start, noise_duration)
+            lambda a, ap: ap.replace_fragment_with_silence(a, noise_start, noise_duration)
 
         iterator = tqdm(enumerate(pieces), total=len(pieces), disable=not verbose)
         for i, piece in iterator:
