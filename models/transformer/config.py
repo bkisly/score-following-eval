@@ -23,6 +23,9 @@ class TransformerConfig:
     low_confidence_threshold: float = 0.20
     max_backstep: int = 2
     max_forward_step: int = 64
+    max_deviation_seconds: float = 2.5
+    anti_stall_chunks: int = 6
+    forced_forward_step: int = 1
 
     # Live features
     live_context_seconds: float = 4.0

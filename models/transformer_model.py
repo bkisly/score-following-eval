@@ -68,6 +68,7 @@ class TransformerModel(ScoreFollower):
         self.state.current_ref_idx = 0
         self.state.prev_ref_idx = 0
         self.state.elapsed_seconds = 0.0
+        self.state.stall_chunks = 0
         self.state.audio_buffer = np.zeros(0, dtype=np.float32)
         self.state.initialized = True
         self.current_position = 0.0
@@ -108,9 +109,16 @@ class TransformerModel(ScoreFollower):
         with torch.no_grad():
             _, live_query = self.encoder(live_tensor)
             ref = self.state.reference
+            elapsed_ref_idx = int(
+                np.clip(
+                    self.state.elapsed_seconds * ref.sample_rate / float(ref.hop_length),
+                    0,
+                    len(ref.ref_times_sec) - 1,
+                )
+            )
             win_emb, win_idx, _, _ = select_window(
                 ref_emb=ref.ref_emb.to(self.device),
-                prev_idx=self.state.current_ref_idx,
+                prev_idx=elapsed_ref_idx,
                 config=self.config,
                 ref_hop_length=ref.hop_length,
                 ref_sample_rate=ref.sample_rate,
@@ -128,6 +136,34 @@ class TransformerModel(ScoreFollower):
                 config=self.config,
                 max_idx=len(ref.ref_times_sec) - 1,
             )
+
+            # Keep the prediction close to elapsed-time prior to avoid getting stuck
+            # in local maxima for long periods.
+            max_dev_frames = int(
+                self.config.max_deviation_seconds * ref.sample_rate / float(ref.hop_length)
+            )
+            new_idx = int(
+                np.clip(
+                    new_idx,
+                    max(0, elapsed_ref_idx - max_dev_frames),
+                    min(len(ref.ref_times_sec) - 1, elapsed_ref_idx + max_dev_frames),
+                )
+            )
+
+            if new_idx <= self.state.current_ref_idx:
+                self.state.stall_chunks += 1
+            else:
+                self.state.stall_chunks = 0
+            if (
+                self.state.stall_chunks >= self.config.anti_stall_chunks
+                and confidence < self.config.low_confidence_threshold
+            ):
+                new_idx = min(
+                    len(ref.ref_times_sec) - 1,
+                    self.state.current_ref_idx + self.config.forced_forward_step,
+                )
+                self.state.stall_chunks = 0
+
             tempo = estimate_tempo(
                 prev_idx=self.state.current_ref_idx,
                 new_idx=new_idx,
@@ -153,6 +189,7 @@ class TransformerModel(ScoreFollower):
         self.state.current_ref_idx = 0
         self.state.prev_ref_idx = 0
         self.state.elapsed_seconds = 0.0
+        self.state.stall_chunks = 0
         self.state.audio_buffer = np.zeros(0, dtype=np.float32)
 
     def train(self, train_data: Any = None, **kwargs) -> None:
@@ -169,10 +206,13 @@ class TransformerModel(ScoreFollower):
             raise ValueError("train_data must provide 'dataset_path'.")
 
         dataset_path = cfg["dataset_path"]
-        epochs = int(cfg.get("epochs", 30))
-        lr = float(cfg.get("lr", 3e-4))
+        epochs = int(cfg.get("epochs", 40))
+        lr = float(cfg.get("lr", 2e-4))
         weight_decay = float(cfg.get("weight_decay", 1e-2))
-        samples_per_epoch = int(cfg.get("samples_per_epoch", 400))
+        samples_per_epoch = int(cfg.get("samples_per_epoch", 1200))
+        batch_size = int(cfg.get("batch_size", 64))
+        use_amp = bool(cfg.get("use_amp", True))
+        audio_cache_max_files = int(cfg.get("audio_cache_max_files", 64))
         save_path = cfg.get("save_path")
         window_seconds = float(cfg.get("window_seconds", self.config.window_seconds))
         cache_overwrite = bool(cfg.get("cache_overwrite", False))
@@ -182,7 +222,7 @@ class TransformerModel(ScoreFollower):
         show_cache_progress = bool(cfg.get("show_cache_progress", True))
         reference_cache_dir = cfg.get("reference_cache_dir")
         if reference_cache_dir is None:
-            reference_cache_dir = mkdtemp(prefix="transformer_ref_cqt_")
+            reference_cache_dir = "./transformer_ref_cqt_cache"
 
         train_entries = load_maestro_entries(dataset_path, split="train")
         if not train_entries:
@@ -217,12 +257,13 @@ class TransformerModel(ScoreFollower):
             lr=lr,
             weight_decay=weight_decay,
         )
+        scaler = torch.cuda.amp.GradScaler(enabled=bool(use_amp and self.device.type == "cuda"))
 
         best_loss = float("inf")
         best_state = None
         print(
             f"[TransformerModel] Training start: epochs={epochs}, samples_per_epoch={samples_per_epoch}, "
-            f"entries={len(train_entries)}"
+            f"batch_size={batch_size}, entries={len(train_entries)}, amp={bool(use_amp and self.device.type == 'cuda')}"
         )
         for epoch in range(1, epochs + 1):
             stats = train_epoch(
@@ -233,6 +274,12 @@ class TransformerModel(ScoreFollower):
                 config=self.config,
                 samples_per_epoch=samples_per_epoch,
                 window_seconds=window_seconds,
+                batch_size=batch_size,
+                use_amp=use_amp,
+                scaler=scaler,
+                audio_cache_max_files=audio_cache_max_files,
+                epoch_idx=epoch,
+                total_epochs=epochs,
             )
             loss = float(stats["loss"])
             steps = int(stats["steps"])

@@ -1,8 +1,10 @@
 import csv
 import hashlib
 import json
+from collections import OrderedDict
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -196,6 +198,26 @@ def _load_cached_reference_npz(path: str, model) -> Tuple[torch.Tensor, np.ndarr
     return ref_emb, ref_times_sec, hop_length, sample_rate
 
 
+def _get_cached_audio(
+    audio_path: str,
+    target_sr: int,
+    audio_cache: "OrderedDict[str, np.ndarray]",
+    cache_max_files: int,
+) -> Optional[Tuple[np.ndarray, int]]:
+    if audio_path in audio_cache:
+        audio = audio_cache.pop(audio_path)
+        audio_cache[audio_path] = audio
+        return audio, target_sr
+    try:
+        audio, sr = librosa.load(audio_path, sr=target_sr, mono=True)
+    except Exception:
+        return None
+    audio_cache[audio_path] = audio
+    while len(audio_cache) > cache_max_files:
+        audio_cache.popitem(last=False)
+    return audio, sr
+
+
 def train_epoch(
     model,
     optimizer: torch.optim.Optimizer,
@@ -204,45 +226,58 @@ def train_epoch(
     config: TransformerConfig,
     samples_per_epoch: int,
     window_seconds: float,
+    batch_size: int = 16,
+    use_amp: bool = True,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    audio_cache_max_files: int = 16,
+    epoch_idx: int = 1,
+    total_epochs: int = 1,
 ) -> Dict[str, float]:
     model.encoder.train()
     model.input_proj.train()
 
     total_loss = 0.0
     n_steps = 0
+    audio_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+    amp_enabled = bool(use_amp and model.device.type == "cuda")
+    progress = min(1.0, max(0.0, epoch_idx / float(max(1, total_epochs))))
+    jitter_scale = 0.25 + 0.75 * progress
 
-    for _ in range(samples_per_epoch):
+    sample_buffer = []
+    max_attempts = max(samples_per_epoch * 8, samples_per_epoch + 1)
+    attempts = 0
+    while len(sample_buffer) < samples_per_epoch and attempts < max_attempts:
+        attempts += 1
         midi_path, audio_path = train_entries[np.random.randint(len(train_entries))]
         cache_file = ref_cache_index.get(str(Path(midi_path).resolve()))
         if cache_file is None or not Path(cache_file).exists():
             continue
-
         try:
             ref_emb, ref_times_sec, ref_hop, ref_sr = _load_cached_reference_npz(cache_file, model)
-            audio, sr = librosa.load(audio_path, sr=config.sample_rate, mono=True)
         except Exception:
             continue
-
+        loaded = _get_cached_audio(
+            audio_path=audio_path,
+            target_sr=config.sample_rate,
+            audio_cache=audio_cache,
+            cache_max_files=audio_cache_max_files,
+        )
+        if loaded is None:
+            continue
+        audio, sr = loaded
         if len(audio) < config.chunk_size or len(ref_times_sec) < 4:
             continue
-
         max_start = len(audio) - config.chunk_size
         start = np.random.randint(0, max_start + 1)
         chunk = audio[start : start + config.chunk_size]
+        live_cqt = chunk_to_cqt(chunk, config, sr)
         chunk_time_sec = start / float(sr)
         gt_idx = int(np.searchsorted(ref_times_sec, chunk_time_sec, side="left"))
         gt_idx = int(np.clip(gt_idx, 0, len(ref_times_sec) - 1))
 
-        live_cqt = chunk_to_cqt(chunk, config, sr)
-        live_t = torch.from_numpy(live_cqt).unsqueeze(0).to(model.device)
-        _, live_query = model.encoder(live_t)
-
-        prev_jitter = int(
-            np.random.randint(
-                -int(window_seconds * sr / config.cqt_hop_length),
-                int(window_seconds * sr / config.cqt_hop_length) + 1,
-            )
-        )
+        base_jitter = int(window_seconds * sr / config.cqt_hop_length)
+        jitter_radius = max(1, int(base_jitter * jitter_scale))
+        prev_jitter = int(np.random.randint(-jitter_radius, jitter_radius + 1))
         prev_idx = int(np.clip(gt_idx + prev_jitter, 0, len(ref_times_sec) - 1))
         win_emb, win_idx, _, _ = select_window(
             ref_emb,
@@ -253,36 +288,69 @@ def train_epoch(
         )
         if len(win_idx) < 2:
             continue
-
-        logits = compute_alignment_logits(live_query, win_emb)
         local_target = int(np.where(win_idx == gt_idx)[0][0]) if gt_idx in win_idx else None
         if local_target is None:
             local_target = int(np.argmin(np.abs(win_idx - gt_idx)))
-
-        probs = F.softmax(logits, dim=-1)
-        pred_local = int(torch.argmax(probs, dim=-1).item())
-        pred_global = int(win_idx[pred_local])
-
-        loss_pos = F.cross_entropy(
-            logits, torch.tensor([local_target], dtype=torch.long, device=model.device)
-        )
-        mono_penalty = max(0.0, float(prev_idx - pred_global))
-        loss_mono = torch.tensor(mono_penalty, dtype=torch.float32, device=model.device)
-
-        target_correct = 1.0 if abs(ref_times_sec[pred_global] - chunk_time_sec) <= 0.5 else 0.0
-        conf_pred = torch.max(probs)
-        loss_conf = F.binary_cross_entropy(
-            conf_pred, torch.tensor(target_correct, dtype=torch.float32, device=model.device)
+        sample_buffer.append(
+            {
+                "live_cqt": live_cqt,
+                "win_emb": win_emb,
+                "win_idx": win_idx,
+                "local_target": local_target,
+                "prev_idx": prev_idx,
+                "chunk_time_sec": chunk_time_sec,
+                "ref_times_sec": ref_times_sec,
+            }
         )
 
-        loss = loss_pos + 0.05 * loss_mono + 0.2 * loss_conf
+    for start in range(0, len(sample_buffer), max(1, batch_size)):
+        batch = sample_buffer[start : start + max(1, batch_size)]
+        if not batch:
+            continue
+        live_batch = np.stack([item["live_cqt"] for item in batch], axis=0).astype(np.float32)
+        live_t = torch.from_numpy(live_batch).to(model.device)
+
         optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters_for_training(), 1.0)
-        optimizer.step()
+        autocast_ctx = torch.cuda.amp.autocast(enabled=amp_enabled) if amp_enabled else nullcontext()
+        with autocast_ctx:
+            _, live_queries = model.encoder(live_t)
+            sample_losses = []
+            for i, item in enumerate(batch):
+                live_query = live_queries[i : i + 1]
+                logits = compute_alignment_logits(live_query, item["win_emb"])
+                probs = F.softmax(logits, dim=-1)
+                pred_local = int(torch.argmax(probs, dim=-1).item())
+                pred_global = int(item["win_idx"][pred_local])
+                loss_pos = F.cross_entropy(
+                    logits,
+                    torch.tensor([item["local_target"]], dtype=torch.long, device=model.device),
+                )
+                mono_penalty = max(0.0, float(item["prev_idx"] - pred_global))
+                loss_mono = torch.tensor(mono_penalty, dtype=torch.float32, device=model.device)
+                target_correct = (
+                    1.0 if abs(item["ref_times_sec"][pred_global] - item["chunk_time_sec"]) <= 0.5 else 0.0
+                )
+                conf_pred = torch.max(probs)
+                loss_conf = F.binary_cross_entropy(
+                    conf_pred,
+                    torch.tensor(target_correct, dtype=torch.float32, device=model.device),
+                )
+                sample_losses.append(loss_pos + 0.05 * loss_mono + 0.2 * loss_conf)
+            loss = torch.stack(sample_losses).mean()
 
-        total_loss += float(loss.item())
-        n_steps += 1
+        if amp_enabled and scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters_for_training(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters_for_training(), 1.0)
+            optimizer.step()
+
+        total_loss += float(loss.item()) * len(batch)
+        n_steps += len(batch)
 
     return {"loss": (total_loss / n_steps) if n_steps > 0 else float("inf"), "steps": n_steps}
 

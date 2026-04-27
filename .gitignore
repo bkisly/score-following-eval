@@ -125,6 +125,7 @@ Thumbs.db
 # Cache directories
 .cache/
 cache/
+transformer_ref_cqt_cache
 
 # Profiling
 *.prof
@@ -145,3 +146,6 @@ results/**
 !results/.gitkeep
 !results/README.md
 sheet_tmp
+
+# Other
+.cursor

@@ -20,6 +20,7 @@ class TransformerRuntimeState:
     current_ref_idx: int = 0
     prev_ref_idx: int = 0
     elapsed_seconds: float = 0.0
+    stall_chunks: int = 0
     audio_buffer: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     initialized: bool = False
 
