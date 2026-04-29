@@ -29,20 +29,20 @@ def main():
     print("=" * 70)
     
     # KROK 2: Stwórz modele
-    print("\n[1/3] Creating models...")
-    otw = OTWModel()
-    print(f"  ✓ Created {otw.name}")
-    cyolo = CYOLOModel()
-    print(f"  ✓ Created {cyolo.name}")
-
-    HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
-
-    heurMiT = HeurMiTModel()
-    if not os.path.exists(HEURMIT_CHECKPOINT_PATH):
-        heurMiT.train({'dataset_path': BASE_PATH, 'save_path': HEURMIT_CHECKPOINT_PATH})
-
-    heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
-    print(f"  ✓ Created {heurMiT.name}")
+    # print("\n[1/3] Creating models...")
+    # otw = OTWModel()
+    # print(f"  ✓ Created {otw.name}")
+    # cyolo = CYOLOModel()
+    # print(f"  ✓ Created {cyolo.name}")
+    #
+    # HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
+    #
+    # heurMiT = HeurMiTModel()
+    # if not os.path.exists(HEURMIT_CHECKPOINT_PATH):
+    #     heurMiT.train({'dataset_path': BASE_PATH, 'save_path': HEURMIT_CHECKPOINT_PATH})
+    #
+    # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
+    # print(f"  ✓ Created {heurMiT.name}")
 
     PATCHFORMER_CHECKPOINT_PATH = 'patchformer.pth'
 
@@ -61,7 +61,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[otw, cyolo, heurMiT, patchFormer],
+        models=[patchFormer],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
