@@ -9,6 +9,7 @@ import traceback
 from models.cnn_model import HeurMiTModel
 from models.otw_model import OTWModel
 from models.cyolo_model import CYOLOModel
+from models.transformer_model import TransformerModel
 from evaluation.evaluator import Evaluator
 
 # KROK 1: Ustaw ścieżki do swoich plików
@@ -43,6 +44,15 @@ def main():
     heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
     print(f"  ✓ Created {heurMiT.name}")
 
+    PATCHFORMER_CHECKPOINT_PATH = 'patchformer.pth'
+
+    patchFormer = TransformerModel()
+    if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
+        patchFormer.train({'dataset_path': BASE_PATH, 'save_path': PATCHFORMER_CHECKPOINT_PATH})
+
+    patchFormer.load_checkpoint(PATCHFORMER_CHECKPOINT_PATH)
+    print(f"  ✓ Created {patchFormer.name}")
+
     # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
     evaluator = Evaluator(tolerance_seconds=0.5)
@@ -51,7 +61,7 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[otw, cyolo, heurMiT],
+        models=[otw, cyolo, heurMiT, patchFormer],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True
