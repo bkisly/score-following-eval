@@ -72,8 +72,8 @@ class MAESTROTransformerDataset(Dataset):
                 continue
 
             ctx_s = random.randint(0, T - self.c)
-            min_ws = max(0, ctx_s - self.w + 1)
-            max_ws = min(T - self.w, ctx_s + self.c - 1)
+            min_ws = ctx_s                              # window must start within context
+            max_ws = min(T - self.w, ctx_s + self.c - self.w)  # window must end within context
             if max_ws < min_ws:
                 continue
             ws = random.randint(min_ws, max_ws)
