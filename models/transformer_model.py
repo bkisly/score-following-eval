@@ -241,20 +241,16 @@ class TransformerModel(ScoreFollower):
             logits = logits.squeeze(0)                                   # [N_valid]
             P_np = logits.cpu().numpy()
 
-        # ── Heuristic decision → frame-space raw_k ───────────────────────────
-        # _heuristic_decision expects a frame-space array where index k means
-        # "right edge of window is at context frame k" (CNN cross-correlation
-        # convention).  P_np is in patch space (index = window start patch).
-        # Upsample by patch_size and shift by (inf_w-1) to convert:
-        #   patch p  →  right-edge frame  p*patch_size + (inf_w-1)
+        # ── Heuristic decision → patch_k ────────────────────────────────────
+        # Pad to c+w-1 length so _heuristic_decision is called unchanged.
         target_len = self.inf_c + self.inf_w - 1
-        P_frame = np.full(target_len, float(P_np.min()) - 1.0, dtype=np.float32)
-        P_up = np.repeat(P_np, self.patch_size)   # [N_valid * patch_size]
-        start = self.inf_w - 1                     # right-edge offset
-        P_frame[start : start + len(P_up)] = P_up
+        P_padded = np.full(target_len, P_np.min() - 1.0, dtype=np.float32)
+        P_padded[:len(P_np)] = P_np
 
-        raw_k = self._heuristic_decision(P_frame, ctx_frame_start)
-        raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
+        raw_k = self._heuristic_decision(P_padded, ctx_frame_start)
+        # raw_k is in patch space (0..N_valid-1); convert to frame right-edge
+        raw_k_frame = int(raw_k) * self.patch_size + (self.inf_w - 1)
+        raw_k = int(np.clip(raw_k_frame, self.inf_w - 1, self.inf_c - 1))
 
         # ── Bug-1 fix: abs_frame = ctx_start + raw_k (right edge) ────────────
         raw_abs_frame = float(ctx_frame_start + raw_k)
