@@ -248,11 +248,11 @@ class TransformerModel(ScoreFollower):
         P_padded[:len(P_np)] = P_np
 
         raw_k = self._heuristic_decision(P_padded, ctx_frame_start)
-        # raw_k is a cross-correlation index; valid range: [inf_w-1, inf_c-1]
         raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
 
-        # ── Bug-1 fix: abs_frame = ctx_start + raw_k (right edge) ────────────
-        raw_abs_frame = float(ctx_frame_start + raw_k)
+        # Add inf_w to convert predicted window START → window END (current position).
+        # The label was trained on window start; the evaluator expects current time.
+        raw_abs_frame = float(ctx_frame_start + raw_k + self.inf_w)
 
         # ── Clamp to elapsed ± max_deviation ─────────────────────────────────
         max_dev = self._max_dev if self._max_dev is not None else self.inf_c // 3
