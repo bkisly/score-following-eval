@@ -241,21 +241,17 @@ class TransformerModel(ScoreFollower):
             logits = logits.squeeze(0)                                   # [N_valid]
             P_np = logits.cpu().numpy()
 
-        # ── Patch-space position estimate ────────────────────────────────────
-        # _heuristic_decision was designed for HeurMiT's frame-space
-        # cross-correlation (peak in [127,511]).  Its ring-buffer mixes frame
-        # and patch units (ctx_frame_start + model_k_patch), causing startup
-        # contamination that makes it unstable here.  Use direct argmax + a
-        # running mean in pure absolute-patch space instead.
-        model_patch = int(np.argmax(P_np))           # context-local [0, N_valid-1]
-        abs_patch    = ctx_patch_start + model_patch  # absolute patch in reference
+        # ── Heuristic decision → patch_k ────────────────────────────────────
+        # Pad to c+w-1 length so _heuristic_decision is called unchanged.
+        target_len = self.inf_c + self.inf_w - 1
+        P_padded = np.full(target_len, P_np.min() - 1.0, dtype=np.float32)
+        P_padded[:len(P_np)] = P_np
 
-        self._abs_pred_buf.append(float(abs_patch))
-        smooth_abs_patch = float(np.mean(list(self._abs_pred_buf)))
-        patch_in_ctx     = smooth_abs_patch - ctx_patch_start
+        raw_k = self._heuristic_decision(P_padded, ctx_frame_start)
+        # raw_k is a cross-correlation index; valid range: [inf_w-1, inf_c-1]
+        raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
 
-        raw_k_frame = int(round(patch_in_ctx)) * self.patch_size + (self.inf_w - 1)
-        raw_k       = int(np.clip(raw_k_frame, self.inf_w - 1, self.inf_c - 1))
+        # ── Bug-1 fix: abs_frame = ctx_start + raw_k (right edge) ────────────
         raw_abs_frame = float(ctx_frame_start + raw_k)
 
         # ── Clamp to elapsed ± max_deviation ─────────────────────────────────
@@ -548,9 +544,8 @@ class TransformerModel(ScoreFollower):
         if len(buf) < 4:
             return 0.0
         xs    = np.arange(len(buf), dtype=float)
-        slope = float(np.polyfit(xs, buf, 1)[0])  # patches per call
-        slope_frames = slope * self.patch_size     # frames per call
-        return float(np.clip(slope_frames * 60.0, 20.0, 400.0)) if slope_frames > 0 else 0.0
+        slope = float(np.polyfit(xs, buf, 1)[0])
+        return float(np.clip(slope * 60.0, 20.0, 400.0)) if slope > 0 else 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
