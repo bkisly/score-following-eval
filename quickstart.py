@@ -64,7 +64,8 @@ def main():
         models=[patchFormer],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
-        save_results=True
+        save_results=True,
+        audio_transformator=lambda a, ap: ap.time_stretch(a, 1.5)
     )
     
     print("\n" + "=" * 70)
