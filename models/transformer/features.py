@@ -5,10 +5,11 @@ Re-exports from cnn_model:
   apply_augmentations, _load_piano_roll_cache, _maestro_train_paths
 
 Adds:
-  compute_cqt_features   — shared CQT pipeline (pre-computation + inference)
-  _maestro_wav_paths     — extract paired WAV paths from MAESTRO metadata
-  _precompute_cqt_cache  — one-time WAV→CQT→.npy conversion
-  _load_cqt_cache        — load pre-computed .npy arrays as float16
+  compute_cqt_features         — shared CQT pipeline (pre-computation + inference)
+  _maestro_wav_paths           — extract paired WAV paths from MAESTRO metadata
+  _precompute_cqt_cache        — one-time WAV→CQT→.npy conversion
+  _precompute_piano_roll_cache — one-time MIDI→piano-roll→.npy conversion
+  _load_cqt_cache              — load pre-computed .npy arrays (mmap, float16)
 """
 
 import csv
@@ -21,6 +22,7 @@ from typing import List, Optional, Tuple
 
 import librosa
 import numpy as np
+import pretty_midi
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from models.cnn_model import apply_augmentations, _load_piano_roll_cache, _maestro_train_paths  # noqa: E402
@@ -32,6 +34,7 @@ __all__ = [
     "compute_cqt_features",
     "_maestro_wav_paths",
     "_precompute_cqt_cache",
+    "_precompute_piano_roll_cache",
     "_load_cqt_cache",
 ]
 
@@ -193,12 +196,55 @@ def _precompute_cqt_cache(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CQT cache loader
+# One-time piano-roll pre-computation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _precompute_piano_roll_cache(
+    midi_paths: List[str],
+    cache_dir: Path,
+    fps: int = 100,
+) -> List[Optional[Path]]:
+    """
+    For each MIDI file, compute the binary piano roll and save as float16 .npy.
+    Skips files whose .npy already exists. Returns list of .npy paths
+    aligned with midi_paths; entries that fail are set to None.
+
+    Storage: ~1–4 MB / file (fp16, binary content). 250 files ≈ 0.5–1 GB.
+    """
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    npy_paths: List[Optional[Path]] = []
+
+    for midi_path in midi_paths:
+        npy_path = cache_dir / (Path(midi_path).stem + "_roll.npy")
+        npy_paths.append(npy_path)
+        if npy_path.exists():
+            continue
+        try:
+            raw  = pretty_midi.PrettyMIDI(midi_path).get_piano_roll(fs=fps)
+            roll = (raw > 0).astype(np.float16)
+            if roll.ndim != 2 or roll.shape[1] == 0:
+                npy_paths[-1] = None
+                continue
+            np.save(npy_path, roll)
+            print(
+                f"  [Roll cache] {Path(midi_path).stem}: "
+                f"shape={roll.shape}  → {npy_path.name}"
+            )
+        except Exception as e:
+            warnings.warn(f"[Roll cache] skip '{midi_path}': {e}")
+            npy_paths[-1] = None
+
+    return npy_paths
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CQT cache loader  (mmap — workers share via OS page cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_cqt_cache(npy_paths: List[Optional[Path]]) -> List[np.ndarray]:
     """
-    Load pre-computed CQT .npy files as float16 arrays.
+    Memory-map pre-computed CQT .npy files as float16 arrays.
     Returns a list aligned with npy_paths; missing files are skipped.
     """
     cache = []
@@ -206,7 +252,7 @@ def _load_cqt_cache(npy_paths: List[Optional[Path]]) -> List[np.ndarray]:
         if npy_path is None or not Path(npy_path).exists():
             continue
         try:
-            arr = np.load(str(npy_path))  # float16
+            arr = np.load(str(npy_path), mmap_mode="r")  # float16
             if arr.ndim == 2 and arr.shape[0] == 128 and arr.shape[1] > 0:
                 cache.append(arr)
         except Exception as e:

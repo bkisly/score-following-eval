@@ -39,6 +39,8 @@ def get_maestro_test_pairs(
                 meta["midi_filename"][key],
                 meta["audio_filename"][key],
                 float(meta["duration"][key]),
+                meta["canonical_composer"][key],
+                meta["canonical_title"][key],
             )
             for key, split in meta["split"].items()
             if split == "test"
@@ -52,6 +54,8 @@ def get_maestro_test_pairs(
                     row["midi_filename"],
                     row["audio_filename"],
                     float(row["duration"]),
+                    row["canonical_composer"],
+                    row["canonical_title"],
                 )
                 for row in reader
                 if row["split"] == "test"
@@ -69,14 +73,24 @@ def get_maestro_test_pairs(
     # Sort before slicing to guarantee a stable, deterministic order
     pairs.sort(key=lambda p: (p[0], p[1]))
 
+    seen: set[tuple[str, str]] = set()
+    unique_pairs = []
+    for p in pairs:
+        key = (p[3], p[4])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_pairs.append(p)
+    pairs = unique_pairs
+
     if max_pieces is not None:
         pairs = pairs[:max_pieces]
 
     # Resolve to absolute paths only after filtering/slicing
     return [
         Piece(midi_path=str(dataset_path / midi), audio_path=str(dataset_path / audio),
-              metadata=get_piece_metadata(str(dataset_path), audio, midi))
-        for midi, audio, _ in pairs
+              metadata=PieceMetadata(composer=composer, title=title))
+        for midi, audio, _, composer, title in pairs
     ]
 
 def get_piece_metadata(dataset_path: str, wav_path: str, midi_path: str) -> PieceMetadata:

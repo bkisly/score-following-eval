@@ -34,14 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.score_follower import ScoreFollower
 from models.transformer.network import TransformerNet
 from models.transformer.features import (
-    apply_augmentations,
     compute_cqt_features,
-    _maestro_train_paths,
     _maestro_wav_paths,
     _precompute_cqt_cache,
-    _load_cqt_cache,
+    _precompute_piano_roll_cache,
 )
-from models.cnn_model import _load_piano_roll_cache
 
 
 class TransformerModel(ScoreFollower):
@@ -91,7 +88,7 @@ class TransformerModel(ScoreFollower):
         stabilization_steps: int = 5,
         max_consecutive_buffer: int = 5,
     ):
-        super().__init__(name="PatchFormer")
+        super().__init__(name="Transformer")
 
         self.d_model = d_model
         self.patch_size = patch_size
@@ -282,15 +279,19 @@ class TransformerModel(ScoreFollower):
             dict → {
               'dataset_path'       : str,
               'epochs'             : int   (50),
-              'batch_size'         : int   (256),
-              'samples_per_epoch'  : int   (5000),
-              'val_samples'        : int   (200),
-              'lr'                 : float (1e-3),
+              'batch_size'         : int   (2048),
+              'samples_per_epoch'  : int   (50000),
+              'val_samples'        : int   (1000),
+              'lr'                 : float (1.5e-3),
               'weight_decay'       : float (1e-2),
               'save_path'          : str   (optional),
-              'cache_size'         : int   (250),
-              'cqt_cache_dir'      : str   (optional, default: dataset_path/cqt_cache),
-              'num_workers'        : int   (2),
+              'cache_size'         : int   (500; sized so dataset fits in 32 GB
+                                             RAM page cache without thrashing.
+                                             Pass None for all train pieces — only
+                                             advisable on >=64 GB systems),
+              'cqt_cache_dir'      : str   (default: dataset_path/cqt_cache),
+              'roll_cache_dir'     : str   (default: dataset_path/roll_cache),
+              'num_workers'        : int   (6),
             }
         """
         from torch.utils.data import DataLoader
@@ -299,15 +300,16 @@ class TransformerModel(ScoreFollower):
         cfg = {"dataset_path": train_data} if isinstance(train_data, str) else dict(train_data)
         dpath      = cfg["dataset_path"]
         epochs     = int(cfg.get("epochs", 50))
-        bsz        = int(cfg.get("batch_size", 256))
-        n_tr       = int(cfg.get("samples_per_epoch", 5000))
-        n_val      = int(cfg.get("val_samples", 200))
-        lr         = float(cfg.get("lr", 1e-3))
+        bsz        = int(cfg.get("batch_size", 4096))
+        n_tr       = int(cfg.get("samples_per_epoch", 100000))
+        n_val      = int(cfg.get("val_samples", 1000))
+        lr         = float(cfg.get("lr", 3e-3))
         wd         = float(cfg.get("weight_decay", 1e-2))
         spath      = cfg.get("save_path", None)
-        cache_size = int(cfg.get("cache_size", 250))
-        num_workers = int(cfg.get("num_workers", 2))
-        cqt_cache_dir = Path(cfg.get("cqt_cache_dir", Path(dpath) / "cqt_cache"))
+        cache_size = cfg.get("cache_size", 250)  # tuned so cache fits in 32 GB RAM
+        num_workers = int(cfg.get("num_workers", 6))
+        cqt_cache_dir  = Path(cfg.get("cqt_cache_dir",  Path(dpath) / "cqt_cache"))
+        roll_cache_dir = Path(cfg.get("roll_cache_dir", Path(dpath) / "roll_cache"))
 
         print(f"[PatchFormer] Loading MAESTRO train split from '{dpath}' …")
         midi_paths, wav_paths = _maestro_wav_paths(dpath)
@@ -315,60 +317,70 @@ class TransformerModel(ScoreFollower):
             raise RuntimeError("No train-split MIDI found.")
         print(f"[PatchFormer] Found {len(midi_paths)} train pairs.")
 
-        # ── Step 1: Pre-compute CQT features (one-time) ───────────────────────
-        n_cache = min(len(midi_paths), cache_size)
+        # ── Step 1: Pre-compute fp16 .npy caches (one-time, idempotent) ──────
+        n_cache = len(midi_paths) if cache_size is None else min(len(midi_paths), int(cache_size))
         print(f"[PatchFormer] Pre-computing CQT cache ({n_cache} files) → {cqt_cache_dir} …")
-        npy_paths = _precompute_cqt_cache(
+        cqt_npy = _precompute_cqt_cache(
             wav_paths[:n_cache], cqt_cache_dir, fps=self.fps
         )
+        print(f"[PatchFormer] Pre-computing piano-roll cache ({n_cache} files) → {roll_cache_dir} …")
+        roll_npy = _precompute_piano_roll_cache(
+            midi_paths[:n_cache], roll_cache_dir, fps=self.fps
+        )
 
-        # ── Step 2: Load piano roll cache ─────────────────────────────────────
-        print(f"[PatchFormer] Loading piano roll cache ({n_cache} files) …")
-        roll_cache = _load_piano_roll_cache(midi_paths[:n_cache])
-        if not roll_cache:
-            raise RuntimeError("Could not load any MIDI files.")
+        # Keep only indices where BOTH .npy files are available.
+        paired = [
+            (str(r), str(c))
+            for r, c in zip(roll_npy, cqt_npy)
+            if r is not None and Path(r).exists()
+            and c is not None and Path(c).exists()
+        ]
+        if not paired:
+            raise RuntimeError("No usable cached pairs (roll + CQT).")
+        roll_paths = [p[0] for p in paired]
+        cqt_paths  = [p[1] for p in paired]
+        n_pieces = len(paired)
+        print(f"[PatchFormer] Cached pairs ready: {n_pieces} pieces (mmap-backed).")
 
-        # ── Step 3: Load CQT cache ────────────────────────────────────────────
-        print(f"[PatchFormer] Loading CQT cache …")
-        cqt_cache = _load_cqt_cache(npy_paths)
-        if not cqt_cache:
-            raise RuntimeError("Could not load any CQT cache files.")
-
-        # Align: keep only indices where both caches are available
-        n_pieces = min(len(roll_cache), len(cqt_cache))
-        roll_cache = roll_cache[:n_pieces]
-        cqt_cache  = cqt_cache[:n_pieces]
-        print(f"[PatchFormer] Cached {n_pieces} pieces (piano roll + CQT).")
-
-        # ── Step 4: Build datasets + DataLoader ───────────────────────────────
+        # ── Step 2: Build datasets + DataLoaders ─────────────────────────────
         split = max(1, n_pieces * 9 // 10)
-        tr_roll, vl_roll = roll_cache[:split], roll_cache[split:]
-        tr_cqt,  vl_cqt  = cqt_cache[:split],  cqt_cache[split:]
+        tr_roll = roll_paths[:split]
+        tr_cqt  = cqt_paths[:split]
+        vl_roll = roll_paths[split:] or roll_paths
+        vl_cqt  = cqt_paths[split:]  or cqt_paths
 
         tr_dataset = MAESTROTransformerDataset(
             tr_roll, tr_cqt, self.c, self.w, self.patch_size,
             augment=True, length=n_tr,
         )
         vl_dataset = MAESTROTransformerDataset(
-            vl_roll if vl_roll else tr_roll,
-            vl_cqt  if vl_cqt  else tr_cqt,
-            self.c, self.w, self.patch_size,
+            vl_roll, vl_cqt, self.c, self.w, self.patch_size,
             augment=False, length=n_val,
         )
 
-        # On Windows, 'spawn' context is required; fall back to 0 if it fails
+        pin = (self.device != "cpu")
         try:
             tr_loader = DataLoader(
-                tr_dataset, batch_size=bsz, num_workers=num_workers,
-                pin_memory=(self.device != "cpu"),
+                tr_dataset, batch_size=bsz,
+                num_workers=num_workers,
+                pin_memory=pin,
                 persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None,
+            )
+            vl_loader = DataLoader(
+                vl_dataset, batch_size=bsz,
+                num_workers=min(2, num_workers),
+                pin_memory=pin,
+                persistent_workers=(min(2, num_workers) > 0),
             )
         except Exception:
             warnings.warn("[PatchFormer] DataLoader with workers failed; falling back to num_workers=0.")
-            tr_loader = DataLoader(tr_dataset, batch_size=bsz, num_workers=0)
+            tr_loader = DataLoader(tr_dataset, batch_size=bsz, num_workers=0, pin_memory=pin)
+            vl_loader = DataLoader(vl_dataset, batch_size=bsz, num_workers=0, pin_memory=pin)
 
-        # ── Step 5: Optimizer, scheduler, AMP ────────────────────────────────
+        # ── Step 3: Optimizer, scheduler, AMP, cuDNN autotune ────────────────
+        if self.device.startswith("cuda"):
+            torch.backends.cudnn.benchmark = True
+
         steps_per_epoch = max(1, n_tr // bsz)
         optimizer = torch.optim.AdamW(
             self.net.parameters(), lr=lr, weight_decay=wd, betas=(0.9, 0.999)
@@ -386,7 +398,7 @@ class TransformerModel(ScoreFollower):
         best_val_acc = 0.0
         best_state: Optional[dict] = None
 
-        # ── Training loop ─────────────────────────────────────────────────────
+        # ── Training loop ────────────────────────────────────────────────────
         for epoch in range(1, epochs + 1):
             self.net.train()
             tr_loss, tr_corr, tr_tot = 0.0, 0, 0
@@ -399,11 +411,12 @@ class TransformerModel(ScoreFollower):
                     loader_iter = iter(tr_loader)
                     ctx, win, label = next(loader_iter)
 
-                ctx   = ctx.to(self.device, non_blocking=True)
+                # ctx arrives as fp16 — upcast on GPU to halve PCIe bytes.
+                ctx   = ctx.to(self.device, non_blocking=True).float()
                 win   = win.to(self.device, non_blocking=True)
                 label = label.to(self.device, non_blocking=True)
 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=self.device.split(":")[0],
                                     dtype=torch.float16, enabled=use_amp):
                     logits = self.net(ctx, win)          # [B, N_valid]
@@ -424,15 +437,14 @@ class TransformerModel(ScoreFollower):
             tr_loss /= max(tr_tot, 1)
             tr_acc   = 100.0 * tr_corr / max(tr_tot, 1)
 
-            # ── Validation ────────────────────────────────────────────────────
+            # ── Validation (loader is persistent, built once above) ──────────
             self.net.eval()
             vl_loss, vl_corr, vl_n = 0.0, 0, 0
-            vl_loader = DataLoader(vl_dataset, batch_size=bsz, num_workers=0)
             with torch.no_grad():
                 for ctx_v, win_v, label_v in vl_loader:
-                    ctx_v   = ctx_v.to(self.device)
-                    win_v   = win_v.to(self.device)
-                    label_v = label_v.to(self.device)
+                    ctx_v   = ctx_v.to(self.device, non_blocking=True).float()
+                    win_v   = win_v.to(self.device, non_blocking=True)
+                    label_v = label_v.to(self.device, non_blocking=True)
                     with torch.autocast(device_type=self.device.split(":")[0],
                                         dtype=torch.float16, enabled=use_amp):
                         logits_v = self.net(ctx_v, win_v)
@@ -454,7 +466,7 @@ class TransformerModel(ScoreFollower):
                 best_val_acc = vl_acc
                 best_state = {k: v.cpu().clone() for k, v in self.net.state_dict().items()}
 
-        # ── Restore best weights ──────────────────────────────────────────────
+        # ── Restore best weights ─────────────────────────────────────────────
         if best_state:
             self.net.load_state_dict(best_state)
         self.net.to(self.device).eval()
