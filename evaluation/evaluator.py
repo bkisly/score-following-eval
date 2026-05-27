@@ -87,7 +87,7 @@ class Evaluator:
             result = model.process_frame(chunk, sr)
 
             predictions.append(result['position'])
-            latencies.append(result['latency'])
+            latencies.append(result['latency'] + (CHUNK_SIZE * 1000 / SAMPLE_RATE))
 
             if verbose and i % 50 == 0:
                 iterator.set_description(
