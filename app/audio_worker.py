@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 # Number of samples per audio chunk delivered to both the speaker and the model.
 # 2048 samples at 44100 Hz ≈ 46 ms per chunk (~21 fps update rate).
 CHUNK_SIZE: int = 2048
+SAMPLING_RATE = 22050 # half of 44100 for mono processing
 
 # Maximum number of unprocessed chunks held in the queue.  If the model is
 # slower than real-time the oldest chunks are silently dropped so the audio
@@ -97,7 +98,7 @@ class AudioWorker(QThread):
 
         # ── 1. Load audio ─────────────────────────────────────────────
         try:
-            audio, sr = librosa.load(self.wav_path, sr=None, mono=True)
+            audio, sr = librosa.load(self.wav_path, sr=SAMPLING_RATE)
             audio = audio.astype(np.float32)
         except Exception as exc:
             self.error_occurred.emit(f"Cannot load audio file:\n{exc}")
@@ -201,7 +202,6 @@ class AudioWorker(QThread):
                     result = self.model.process_frame(chunk, sr)
                     position = float(result.get("position", 0.0))
                     confidence = float(result.get("confidence", 0.0))
-                    print(f"Latency: {result.get('latency', 0.0)} ms")
                     self.position_updated.emit(position, confidence)
                 except Exception as exc:
                     self.error_occurred.emit(f"Model inference error:\n{exc}")
