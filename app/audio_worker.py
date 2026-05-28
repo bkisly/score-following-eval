@@ -176,10 +176,32 @@ class AudioWorker(QThread):
                     # Sentinel: stream finished normally or stop() was called.
                     break
 
+                # ── Drain stale chunks ────────────────────────────────────
+                # If the model is slower than real-time (e.g. neural models
+                # at ~40 ms/chunk vs 46 ms chunk interval), the queue builds
+                # up and position falls behind.  Discard all but the newest
+                # chunk so we always track the current playback position.
+                # Fast models (OTW ~2 ms) never accumulate a backlog so this
+                # branch is effectively never taken for them.
+                sentinel_found = False
+                while True:
+                    try:
+                        newer = inf_queue.get_nowait()
+                        if newer is None:
+                            sentinel_found = True
+                            break
+                        chunk = newer
+                    except queue.Empty:
+                        break
+
+                if sentinel_found:
+                    break
+
                 try:
                     result = self.model.process_frame(chunk, sr)
                     position = float(result.get("position", 0.0))
                     confidence = float(result.get("confidence", 0.0))
+                    print(f"Latency: {result.get('latency', 0.0)} ms")
                     self.position_updated.emit(position, confidence)
                 except Exception as exc:
                     self.error_occurred.emit(f"Model inference error:\n{exc}")
