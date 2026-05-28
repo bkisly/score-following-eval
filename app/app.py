@@ -101,7 +101,6 @@ class MainWindow(QMainWindow):
         for w, stretch in [
             (self._pos_label,   0),
             (_spacer(20),       0),
-            (self._conf_label,  0),
             (_spacer(16),       0),
             (self._state_label, 0),
             (None,              1),  # flexible gap
