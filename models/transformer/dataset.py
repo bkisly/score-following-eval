@@ -96,11 +96,20 @@ class MAESTROTransformerDataset(Dataset):
             if T < self.c + self.w:
                 continue
 
-            ctx_s = random.randint(0, T - self.c)
-            min_ws = max(0, ctx_s - self.w + 1)
-            max_ws = min(T - self.w, ctx_s + self.c - 1)
-            if max_ws < min_ws:
+            # Window must start INSIDE the context so the label is never clipped.
+            # Previous bounds allowed ws < ctx_s (window partially before context),
+            # which caused two compounding bugs:
+            #   1. Training on misaligned pairs: W contains audio from BEFORE the
+            #      context region, yet the label says "window aligns with start of C".
+            #   2. 33x label pile-up at label 0 and label 96 (all out-of-bounds ws
+            #      values collapse to the nearest extreme label after clipping).
+            # Fix: ws ∈ [ctx_s,  ctx_s + c - w]  →  label ∈ [0, N_ctx - N_win]
+            # uniformly, with each label covered by exactly patch_size ws values.
+            if T < self.c + self.w:
                 continue
+            ctx_s = random.randint(0, T - self.c)
+            min_ws = ctx_s
+            max_ws = ctx_s + self.c - self.w   # = ctx_s + (max_label * patch_size)
             ws = random.randint(min_ws, max_ws)
             if ws + self.w > T:
                 continue

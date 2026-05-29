@@ -285,9 +285,16 @@ class TransformerModel(ScoreFollower):
         # so the absolute frame is simply ctx_frame_start + raw_k — no +inf_w.
         raw_abs_frame = float(ctx_frame_start + raw_k)
 
-        # ── Clamp to elapsed ± max_deviation ─────────────────────────────────
+        # ── Clamp to _prev_abs ± max_deviation ───────────────────────────────
+        # Bug fix: previous code clamped to  elapsed ± max_dev  (audio clock).
+        # At 10% tempo deviation the performer falls outside that window after
+        # max_dev / (0.10 * fps) = 170 / 10 = 17 s, forcing the output back to
+        # audio-clock timing and permanently breaking tempo tracking.
+        # Clamping to _prev_abs ± max_dev constrains the per-frame step size
+        # (protects against large random jumps) without limiting total drift.
         max_dev = self._max_dev if self._max_dev is not None else self.inf_c // 3
-        abs_frame = float(np.clip(raw_abs_frame, elapsed - max_dev, elapsed + max_dev))
+        prev_for_clamp = self._prev_abs if self._prev_abs is not None else elapsed
+        abs_frame = float(np.clip(raw_abs_frame, prev_for_clamp - max_dev, prev_for_clamp + max_dev))
         abs_frame = float(np.clip(abs_frame, 0, T_ref - 1))
 
         self.current_position = abs_frame / self.fps
