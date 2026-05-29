@@ -22,6 +22,8 @@ import numpy as np
 import librosa
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from utils.audio_processing import AudioProcessor
+
 # sounddevice is imported lazily inside run() because it probes PortAudio
 # at import time; doing it lazily means a missing PortAudio installation
 # is reported as a clear runtime error rather than an import crash.
@@ -65,6 +67,7 @@ class AudioWorker(QThread):
         self.model = model
         self._running = False
         self._queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=QUEUE_MAXSIZE)
+        self._audio_processor = AudioProcessor()
 
     # ------------------------------------------------------------------
     # Public API (called from the main/Qt thread)
@@ -100,6 +103,7 @@ class AudioWorker(QThread):
         try:
             audio, sr = librosa.load(self.wav_path, sr=SAMPLING_RATE)
             audio = audio.astype(np.float32)
+            audio = self._audio_processor.time_stretch(audio, 0.8)
         except Exception as exc:
             self.error_occurred.emit(f"Cannot load audio file:\n{exc}")
             self.playback_finished.emit()

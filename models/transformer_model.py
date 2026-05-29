@@ -209,17 +209,27 @@ class TransformerModel(ScoreFollower):
 
         W_np = compute_cqt_features(audio_window, sample_rate, self.fps, target_w=self.inf_w)
 
-        # ── Context window from elapsed time ──────────────────────────────────
+        # ── Context window centred on last accepted prediction (closed-loop) ──
+        # Bug 4 fix: the original code always centred the context on the audio
+        # clock (elapsed), making it permanently open-loop — any performer tempo
+        # deviation causes the true score position to drift outside the context
+        # window after ~12-25 s, after which the model is matching the wrong
+        # region of the score entirely.  Instead, we anchor on _prev_abs (the
+        # model's own last accepted output), which keeps the true position inside
+        # the ±(inf_c/2) search window regardless of tempo drift.
+        # Fall back to elapsed only during cold-start (first few frames).
         N_inf_ctx = self.inf_c // self.patch_size
         N_inf_win = self.inf_w // self.patch_size
         N_valid = N_inf_ctx - N_inf_win + 1
 
-        elapsed_patch = int(elapsed) // self.patch_size
-        ctx_patch_start = int(np.clip(
-            elapsed_patch - N_inf_ctx // 2,
-            0, max(0, N_ref_patches - N_inf_ctx)
+        anchor_frame = self._prev_abs if self._prev_abs is not None else elapsed
+        ctx_frame_start = int(np.clip(
+            anchor_frame - self.inf_c // 2,
+            0, max(0, T_ref - self.inf_c)
         ))
-        ctx_frame_start = ctx_patch_start * self.patch_size
+        # Align to patch grid so the pre-computed raw patch index arithmetic stays exact
+        ctx_frame_start = (ctx_frame_start // self.patch_size) * self.patch_size
+        ctx_patch_start = ctx_frame_start // self.patch_size
 
         # ── Retrieve pre-computed ref patch slice + encode on GPU ─────────────
         ctx_raw = self.ref_raw_patches[ctx_patch_start : ctx_patch_start + N_inf_ctx]
@@ -238,18 +248,42 @@ class TransformerModel(ScoreFollower):
             logits = logits.squeeze(0)                                   # [N_valid]
             P_np = logits.cpu().numpy()
 
-        # ── Heuristic decision → patch_k ────────────────────────────────────
-        # Pad to c+w-1 length so _heuristic_decision is called unchanged.
+        # ── Heuristic decision → frame_k ─────────────────────────────────────
+        # The transformer logit at patch index p means "window starts at patch p
+        # in the context", so the window's right edge (= current score position)
+        # sits at frame  p * patch_size + inf_w - 1  inside the context.
+        #
+        # The CNN heuristic (_heuristic_decision) was designed around the CNN's
+        # cross-correlation vector where index k is already the window RIGHT EDGE
+        # in frame units — i.e. k ∈ [inf_w-1, inf_c-1].  To reuse it unchanged
+        # we translate every patch logit p to its CNN-equivalent frame index:
+        #
+        #   k_frame = p * patch_size + (inf_w - 1)
+        #
+        # and scatter the logit value there.  This gives a frame-resolution
+        # sparse P_padded that the heuristic understands natively.
+        #
+        # Bug 1 fix: was placing raw logit[p] at array position p (patch index),
+        #   so the heuristic saw model_k ∈ [0,96] in a vector it treats as frame
+        #   indices, yielding model_abs = ctx_frame_start + p (off by patch_size×4).
+        # Bug 2 fix: was clipping raw_k to [inf_w-1, inf_c-1] = [127, 511] on a
+        #   patch-space k [0,96] → always clamped to 127 → position always ≈ elapsed.
+        # Bug 3 fix: was adding + inf_w after ctx_frame_start + raw_k; with k now
+        #   carrying the right-edge convention (same as CNN), the correct formula
+        #   is simply  raw_abs_frame = ctx_frame_start + final_k  (no +inf_w).
         target_len = self.inf_c + self.inf_w - 1
         P_padded = np.full(target_len, P_np.min() - 1.0, dtype=np.float32)
-        P_padded[:len(P_np)] = P_np
+        for p, val in enumerate(P_np):
+            k_frame = p * self.patch_size + (self.inf_w - 1)
+            if 0 <= k_frame < target_len:
+                P_padded[k_frame] = val
 
         raw_k = self._heuristic_decision(P_padded, ctx_frame_start)
         raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
 
-        # Add inf_w to convert predicted window START → window END (current position).
-        # The label was trained on window start; the evaluator expects current time.
-        raw_abs_frame = float(ctx_frame_start + raw_k + self.inf_w)
+        # raw_k is now the window RIGHT EDGE in context-frame coordinates,
+        # so the absolute frame is simply ctx_frame_start + raw_k — no +inf_w.
+        raw_abs_frame = float(ctx_frame_start + raw_k)
 
         # ── Clamp to elapsed ± max_deviation ─────────────────────────────────
         max_dev = self._max_dev if self._max_dev is not None else self.inf_c // 3

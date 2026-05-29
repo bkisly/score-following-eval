@@ -44,7 +44,7 @@ def main():
     # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
     # print(f"  ✓ Created {heurMiT.name}")
 
-    PATCHFORMER_CHECKPOINT_PATH = 'patchformer.pth'
+    PATCHFORMER_CHECKPOINT_PATH = 'patchformer-test.pth'
 
     patchFormer = TransformerModel()
     if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
