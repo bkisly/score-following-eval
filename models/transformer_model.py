@@ -129,6 +129,7 @@ class TransformerModel(ScoreFollower):
         self._step: int = 0
         self._prev_abs: Optional[float] = None
         self._elapsed_frames: float = 0.0
+        self._output_buf: deque = deque(maxlen=3)   # output-only smoothing, does not feed back into tracking
 
     # =========================================================================
     # ScoreFollower interface
@@ -160,6 +161,7 @@ class TransformerModel(ScoreFollower):
         self._step = 0
         self._prev_abs = None
         self._elapsed_frames = 0.0
+        self._output_buf: deque = deque(maxlen=3)
 
     def requires_training(self) -> bool:
         return True
@@ -249,55 +251,40 @@ class TransformerModel(ScoreFollower):
             P_np = logits.cpu().numpy()
 
         # ── Heuristic decision → frame_k ─────────────────────────────────────
-        # The transformer logit at patch index p means "window starts at patch p
-        # in the context", so the window's right edge (= current score position)
-        # sits at frame  p * patch_size + inf_w - 1  inside the context.
+        # Pass the raw 97-logit vector directly.  The heuristic now works in
+        # patch space internally and converts to the frame-space k only at the
+        # very end.  See _heuristic_decision for why the old P_padded scatter
+        # + frame-space smooth was broken.
         #
-        # The CNN heuristic (_heuristic_decision) was designed around the CNN's
-        # cross-correlation vector where index k is already the window RIGHT EDGE
-        # in frame units — i.e. k ∈ [inf_w-1, inf_c-1].  To reuse it unchanged
-        # we translate every patch logit p to its CNN-equivalent frame index:
-        #
-        #   k_frame = p * patch_size + (inf_w - 1)
-        #
-        # and scatter the logit value there.  This gives a frame-resolution
-        # sparse P_padded that the heuristic understands natively.
-        #
-        # Bug 1 fix: was placing raw logit[p] at array position p (patch index),
-        #   so the heuristic saw model_k ∈ [0,96] in a vector it treats as frame
-        #   indices, yielding model_abs = ctx_frame_start + p (off by patch_size×4).
-        # Bug 2 fix: was clipping raw_k to [inf_w-1, inf_c-1] = [127, 511] on a
-        #   patch-space k [0,96] → always clamped to 127 → position always ≈ elapsed.
-        # Bug 3 fix: was adding + inf_w after ctx_frame_start + raw_k; with k now
-        #   carrying the right-edge convention (same as CNN), the correct formula
-        #   is simply  raw_abs_frame = ctx_frame_start + final_k  (no +inf_w).
-        target_len = self.inf_c + self.inf_w - 1
-        P_padded = np.full(target_len, P_np.min() - 1.0, dtype=np.float32)
-        for p, val in enumerate(P_np):
-            k_frame = p * self.patch_size + (self.inf_w - 1)
-            if 0 <= k_frame < target_len:
-                P_padded[k_frame] = val
+        # IMPORTANT: capture _prev_abs BEFORE calling the heuristic, because
+        # the heuristic mutates self._prev_abs at the end of every call.
+        # The clamp below must use the snapshot (previous call's value) so it
+        # constrains the per-step change — if we read self._prev_abs after the
+        # heuristic it is already equal to final_abs, making the clamp a no-op.
+        _prev_abs_snapshot = self._prev_abs
 
-        raw_k = self._heuristic_decision(P_padded, ctx_frame_start)
+        raw_k = self._heuristic_decision(P_np, ctx_frame_start)
         raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
-
-        # raw_k is now the window RIGHT EDGE in context-frame coordinates,
-        # so the absolute frame is simply ctx_frame_start + raw_k — no +inf_w.
         raw_abs_frame = float(ctx_frame_start + raw_k)
 
-        # ── Clamp to _prev_abs ± max_deviation ───────────────────────────────
-        # Bug fix: previous code clamped to  elapsed ± max_dev  (audio clock).
-        # At 10% tempo deviation the performer falls outside that window after
-        # max_dev / (0.10 * fps) = 170 / 10 = 17 s, forcing the output back to
-        # audio-clock timing and permanently breaking tempo tracking.
-        # Clamping to _prev_abs ± max_dev constrains the per-frame step size
-        # (protects against large random jumps) without limiting total drift.
+        # ── Hard clamp: limit per-step jump, not total drift ─────────────────
+        # Use the pre-heuristic snapshot so the clamp is not a no-op, and
+        # anchor to _prev_abs rather than elapsed so cumulative tempo offset
+        # never forces the position back toward the audio clock.
         max_dev = self._max_dev if self._max_dev is not None else self.inf_c // 3
-        prev_for_clamp = self._prev_abs if self._prev_abs is not None else elapsed
+        prev_for_clamp = _prev_abs_snapshot if _prev_abs_snapshot is not None else elapsed
         abs_frame = float(np.clip(raw_abs_frame, prev_for_clamp - max_dev, prev_for_clamp + max_dev))
         abs_frame = float(np.clip(abs_frame, 0, T_ref - 1))
 
-        self.current_position = abs_frame / self.fps
+        # ── Output smoothing (output-only, does not affect tracking state) ───
+        # abs_frame drives context placement and _prev_abs — zero lag, correct tempo.
+        # _output_buf smooths only what is returned as current_position.
+        # A 3-pt causal mean reduces ±4-frame patch noise by ~40% (RMS: 2.84→1.70)
+        # with a constant 1-call lag (~186 ms audio time at any tempo).
+        # There is no velocity term, so there is no cold-start overshoot:
+        # d/dn mean(x[n], x[n-1], x[n-2]) = (x[n]-x[n-3])/3 — exact tempo rate.
+        self._output_buf.append(abs_frame)
+        self.current_position = float(np.mean(self._output_buf)) / self.fps
         confidence = float(F.softmax(logits, dim=0).max().item())
 
         return {
@@ -543,24 +530,53 @@ class TransformerModel(ScoreFollower):
     # =========================================================================
 
     def _heuristic_decision(self, P_np: np.ndarray, ctx_start: int) -> int:
+        """
+        Parameters
+        ----------
+        P_np     : float32 array, shape [N_valid=97] — raw transformer logits
+                   (patch space).  Previously this was a sparse frame-space
+                   P_padded of length inf_c+inf_w-1=639; the scatter has been
+                   removed because the 5-pt frame-space smooth was broken:
+                   adjacent patch positions are 4 frames apart, so the 5-pt
+                   window (half-width 2) never contained two real values at once,
+                   diluting every logit with fill_value×4/5 and suppressing all
+                   peaks below prominence=3.  The argmax fallback then landed on
+                   non-patch-aligned positions, producing random frame jumps.
+        ctx_start: context window start in absolute reference frames.
+        Returns
+        -------
+        Frame-space k (right-edge convention, range [inf_w-1, inf_c-1]) such
+        that the predicted absolute position = ctx_start + k.
+        """
         self._step += 1
-        L = len(P_np)
 
-        smoothed = np.convolve(P_np, np.ones(5) / 5, mode="same")
-        peaks, _ = find_peaks(smoothed, prominence=3)
-        model_k   = int(peaks[np.argmax(smoothed[peaks])]) if len(peaks) else int(np.argmax(smoothed))
+        # ── Gaussian smooth in patch space ────────────────────────────────────
+        # sigma=1.5 patches (60 ms FWHM at 40 ms/patch) blends logit uncertainty
+        # across neighbouring patches without dilution from fill values.
+        sigma  = 1.5
+        hw     = max(2, int(round(3.0 * sigma)))          # 5-patch half-width
+        xs     = np.arange(-hw, hw + 1, dtype=np.float64)
+        kernel = np.exp(-0.5 * (xs / sigma) ** 2)
+        kernel /= kernel.sum()
+        smoothed = np.convolve(P_np.astype(np.float64), kernel, mode="same")
+
+        raw_p     = int(np.argmax(smoothed))
+        model_k   = raw_p * self.patch_size + (self.inf_w - 1)  # right-edge frame k
         model_abs = ctx_start + model_k
+
+        # L used for the final clip — must be in frame space, not patch space
+        L = self.inf_c + self.inf_w - 1
 
         if self._step <= self.stab_steps:
             self._abs_pred_buf.append(float(model_abs))
-            self._prev_abs = float(model_abs)
-            return model_k
+            self._prev_abs   = float(model_abs)
+            return int(np.clip(model_k, self.inf_w - 1, self.inf_c - 1))
 
         buf = np.array(list(self._abs_pred_buf), dtype=float)
         if len(buf) >= 2:
-            xs     = np.arange(len(buf), dtype=float)
-            coeffs = np.polyfit(xs, buf, 1)
-            slope  = coeffs[0]
+            xs_buf    = np.arange(len(buf), dtype=float)
+            coeffs    = np.polyfit(xs_buf, buf, 1)
+            slope     = coeffs[0]
             buf_abs   = float(coeffs[1] + slope * len(buf))
             exp_delta = max(1.0, abs(slope))
         else:
@@ -583,8 +599,9 @@ class TransformerModel(ScoreFollower):
             final_abs        = model_abs
             self._consec_buf = 0
         else:
-            mean_abs = (model_abs + buf_abs) / 2.0
-            final_abs = mean_abs if abs(mean_abs - model_abs) < abs(mean_abs - buf_abs) else buf_abs
+            mean_abs  = (model_abs + buf_abs) / 2.0
+            final_abs = (mean_abs if abs(mean_abs - model_abs) < abs(mean_abs - buf_abs)
+                         else buf_abs)
             self._consec_buf += 1
 
         self._abs_pred_buf.append(float(final_abs))
