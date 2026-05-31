@@ -103,7 +103,7 @@ class AudioWorker(QThread):
         try:
             audio, sr = librosa.load(self.wav_path, sr=SAMPLING_RATE)
             audio = audio.astype(np.float32)
-            audio = self._audio_processor.time_stretch(audio, 1.25)
+            #audio = self._audio_processor.time_stretch(audio, 0.5)
         except Exception as exc:
             self.error_occurred.emit(f"Cannot load audio file:\n{exc}")
             self.playback_finished.emit()

@@ -147,8 +147,9 @@ class Evaluator:
         to the amount of frames in the given audio file.
         """
         midi_duration = midi.get_end_time()
-        frame_times = np.arange(num_frames) * chunk_size / sample_rate
-        frame_times = np.clip(frame_times, 0.0, midi_duration)
+        chunk_duration = float(chunk_size) / sample_rate
+        tempo_ratio = round(midi_duration / (num_frames * chunk_duration), 2)
+        frame_times = np.linspace(0, midi_duration - chunk_duration * tempo_ratio, num_frames)
 
         return frame_times
 

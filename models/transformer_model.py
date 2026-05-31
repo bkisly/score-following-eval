@@ -64,7 +64,15 @@ class TransformerModel(ScoreFollower):
     max_elapsed_deviation : int   ±frame tolerance from elapsed estimate (default c//3)
     """
 
-    _VALID_BEHIND = -48
+    _VALID_BEHIND = -24   # widened from -48: at 0.7x tempo the ring needs ~17 calls
+                          # (3.2 s) to adapt from a 1x warm-up; -48 gave only 8.6 calls
+                          # (1.6 s), causing correct slow-tempo predictions to be rejected
+                          # before the ring could self-correct, and pushing fallback to
+                          # buf_abs which re-poisoned the ring (positive-feedback loop).
+                          # With -96 the ring adapts in time, validated predictions are
+                          # accepted, and the slope converges toward the true tempo.
+                          # Risk of large backward jumps via the valid path is low: any
+                          # backward step > RATE_HIGH * exp_delta still fails rate_ok.
     _VALID_AHEAD  =  96
     _RATE_LOW     = 0.5
     _RATE_HIGH    = 1.5
@@ -561,7 +569,7 @@ class TransformerModel(ScoreFollower):
         smoothed = np.convolve(P_np.astype(np.float64), kernel, mode="same")
 
         raw_p     = int(np.argmax(smoothed))
-        model_k   = raw_p * self.patch_size + (self.inf_w - 1)  # right-edge frame k
+        model_k   = raw_p * self.patch_size + int(0.5 * (self.inf_w - 1))  # forward-helper
         model_abs = ctx_start + model_k
 
         # L used for the final clip — must be in frame space, not patch space
