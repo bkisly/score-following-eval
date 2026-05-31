@@ -480,15 +480,31 @@ def build_page_measure_interpolators(
     page_break_measures: list[int],
     measure_time_map:    dict[int, float],
     n_pages:             int,
+    midi_path:           "str | None"   = None,
+    total_duration:      "float | None" = None,
 ) -> list:
     """
     Per-page scipy.interp1d objects: x-fraction [0,1] → seconds.
 
-    Distributes measure timestamps evenly across page width — more accurate
-    than a single linear interpolation for music with tempo changes.
+    When midi_path is supplied, x-fractions are assigned proportionally to the
+    beat count of each measure, matching LilyPond's proportional note spacing.
+    This is correct because LilyPond spaces notes by beat duration, not by
+    wall-clock time: tempo changes affect seconds-per-beat but leave the visual
+    layout unchanged. Uniform x-fractions (the previous behaviour) caused
+    systematic errors whenever the tempo varied across the page.
+
+    Falls back to uniform x-fractions when beat data is unavailable.
     Returns None for pages with fewer than 2 measures.
     """
     from scipy import interpolate
+
+    all_beats = None
+    if midi_path is not None:
+        try:
+            import pretty_midi as _pm
+            all_beats = _pm.PrettyMIDI(midi_path).get_beats()
+        except Exception:
+            all_beats = None
 
     max_measure = max(measure_time_map.keys())
     interps = []
@@ -506,13 +522,39 @@ def build_page_measure_interpolators(
             interps.append(None)
             continue
 
-        x_frac = np.linspace(0.0, 1.0, len(measures))
-        times  = np.array([measure_time_map[m] for m in measures], dtype=np.float64)
+        times = np.array([measure_time_map[m] for m in measures], dtype=np.float64)
+
+        # Beat-proportional x-fractions: each measure's left edge is placed at
+        # cumulative_beats / total_beats, matching LilyPond's proportional spacing.
+        if all_beats is not None and len(all_beats) > 0:
+            fallback_end = total_duration if total_duration is not None else times[-1] + 1.0
+            beats_per_m = []
+            for i in range(len(measures)):
+                t0 = times[i]
+                t1 = times[i + 1] if i + 1 < len(times) else fallback_end
+                n  = int(np.sum((all_beats >= t0) & (all_beats < t1)))
+                beats_per_m.append(max(1, n))
+            cum          = np.concatenate([[0], np.cumsum(beats_per_m)]).astype(float)
+            total_beats  = cum[-1] if cum[-1] > 0 else 1.0
+            x_frac       = cum[:-1] / total_beats
+        else:
+            x_frac = np.linspace(0.0, 1.0, len(measures))
+
+        # Sentinel at x=1.0 → page-end time so the interpolator covers the
+        # interior of the last measure (not just its start).
+        if p + 1 < len(page_break_measures):
+            page_end = measure_time_map.get(page_break_measures[p + 1], times[-1])
+        else:
+            page_end = total_duration if total_duration is not None else times[-1]
+
+        x_frac     = np.append(x_frac, 1.0)
+        times_full = np.append(times, page_end)
+
         interps.append(
             interpolate.interp1d(
-                x_frac, times,
+                x_frac, times_full,
                 kind="linear", bounds_error=False,
-                fill_value=(times[0], times[-1]),
+                fill_value=(times_full[0], times_full[-1]),
             )
         )
 
@@ -558,13 +600,16 @@ def midi_to_matrices(
     page_timestamps = page_measure_interpolators = None
 
     if return_timestamps:
+        import pretty_midi as _pm
         measure_time_map    = _build_measure_time_map(midi_path)
         page_break_measures = _infer_page_break_measures(len(matrices), measure_time_map)
         page_timestamps     = extract_page_timestamps(
             midi_path, n_pages=len(matrices), measure_time_map=measure_time_map, verbose=verbose
         )
+        total_duration = float(_pm.PrettyMIDI(midi_path).get_end_time())
         page_measure_interpolators = build_page_measure_interpolators(
-            page_break_measures, measure_time_map, n_pages=len(matrices)
+            page_break_measures, measure_time_map, n_pages=len(matrices),
+            midi_path=midi_path, total_duration=total_duration,
         )
 
     if not keep_images:

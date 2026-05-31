@@ -32,8 +32,8 @@ def main():
     # print("\n[1/3] Creating models...")
     # otw = OTWModel()
     # print(f"  ✓ Created {otw.name}")
-    # cyolo = CYOLOModel()
-    # print(f"  ✓ Created {cyolo.name}")
+    cyolo = CYOLOModel()
+    print(f"  ✓ Created {cyolo.name}")
     #
     # HEURMIT_CHECKPOINT_PATH = 'heurmit.pth'
     #
@@ -44,14 +44,14 @@ def main():
     # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
     # print(f"  ✓ Created {heurMiT.name}")
 
-    PATCHFORMER_CHECKPOINT_PATH = 'patchformer-test.pth'
+    # PATCHFORMER_CHECKPOINT_PATH = 'patchformer-test.pth'
 
-    patchFormer = TransformerModel()
-    if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
-        patchFormer.train({'dataset_path': BASE_PATH, 'save_path': PATCHFORMER_CHECKPOINT_PATH})
+    # patchFormer = TransformerModel()
+    # if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
+    #     patchFormer.train({'dataset_path': BASE_PATH, 'save_path': PATCHFORMER_CHECKPOINT_PATH})
 
-    patchFormer.load_checkpoint(PATCHFORMER_CHECKPOINT_PATH)
-    print(f"  ✓ Created {patchFormer.name}")
+    # patchFormer.load_checkpoint(PATCHFORMER_CHECKPOINT_PATH)
+    # print(f"  ✓ Created {patchFormer.name}")
 
     # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
@@ -61,11 +61,11 @@ def main():
     # KROK 4: Uruchom porównanie
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
-        models=[patchFormer],
+        models=[cyolo],
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True,
-        audio_transformator=lambda a, ap: ap.time_stretch(a, 1.25)
+        audio_transformator=lambda a, ap: ap.time_stretch(a, 1)
     )
     
     print("\n" + "=" * 70)

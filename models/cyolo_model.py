@@ -294,18 +294,21 @@ class CYOLOModel(ScoreFollower):
                 # 2. Log-frequency spectrogram ([1, 78])
                 spec_frame = self.network.compute_spec([sig], tempo_aug=False)[0]
 
-                # 3. Page tracking via per-page timestamps
+                # 3. Page tracking via predicted position.
+                # Using the audio clock (elapsed_samples / sr) fails when the
+                # performance tempo deviates from the reference: the clock drifts
+                # and feeds the wrong page image to YOLO. Using the model's own
+                # last predicted position adapts to the actual performance speed.
+                # Pages are constrained to be monotonically non-decreasing to
+                # prevent a stray backward prediction from reverting the page.
                 if len(self.page_timestamps) > 1:
-                    current_time = self.elapsed_samples / self._CYOLO_SR
-                    new_page = 0
+                    new_page = self.current_page  # default: stay
                     for i in range(len(self.page_timestamps) - 1, -1, -1):
-                        if current_time >= self.page_timestamps[i]:
-                            new_page = i
+                        if last_pos >= self.page_timestamps[i]:
+                            new_page = max(self.current_page, i)  # only advance
                             break
                     new_page = min(new_page, self.score_tensor.shape[0] - 1)
-                    if new_page != self.current_page:
-                        self.current_page = new_page
-                        self.hidden = None  # reset LSTM on page turn
+                    self.current_page = new_page
 
                 # 4. Streaming LSTM conditioning update
                 z, self.hidden = self.network.conditioning_network.get_conditioning(
