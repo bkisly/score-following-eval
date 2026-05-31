@@ -72,7 +72,8 @@ class CYOLOModel(ScoreFollower):
         os.path.dirname(os.path.abspath(__file__)),
         "cyolo", "trained_models", "cyolo_sb_a", "best_model.pt",
     )
-    SCALE_WIDTH: int = 416  # YOLO input image size (pixels, square)
+    SCALE_WIDTH:  int = 416  # YOLO input image size (pixels, square)
+    SCALE_HEIGHT: int = 416  # same — images are padded to square before resizing
 
     # Audio processing constants from cyolo_score_following/utils/data_utils.py
     _CYOLO_SR: int = 22050
@@ -84,8 +85,10 @@ class CYOLOModel(ScoreFollower):
         self,
         param_path: Optional[str] = None,
         device: Optional[str] = None,
+        measures_per_system: int = 4,
     ) -> None:
         super().__init__(name="CYOLO-SB+A")
+        self.measures_per_system: int = measures_per_system
 
         self.device = torch.device(
             device if device else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -112,6 +115,11 @@ class CYOLOModel(ScoreFollower):
         # (populated by load_reference; used to correct x predictions)
         self.content_width_fractions: List[float] = []
         self.page_measure_interpolators: List = []
+
+        # Per-page measure lists and the full measure→time map, used by the
+        # y-aware within-system interpolation in _x_to_time.
+        self.page_measures: List[List[int]] = []
+        self.measure_time_map: Dict[int, float] = {}
 
         # Internal audio buffer — keeps a sliding window of the most recent
         # _FRAME_SIZE samples so we can feed overlapping HOP_SIZE-stride
@@ -235,6 +243,24 @@ class CYOLOModel(ScoreFollower):
         import pretty_midi  # type: ignore[import]
         self.total_duration: float = pretty_midi.PrettyMIDI(reference_path).get_end_time()
 
+        # Build per-page measure lists for y-aware within-system interpolation.
+        # _build_measure_time_map / _infer_page_break_measures are already called
+        # inside midi_to_matrices; we call them again here (load-time only).
+        from utils.image_processing import (  # type: ignore[import]
+            _build_measure_time_map, _infer_page_break_measures,
+        )
+        self.measure_time_map = _build_measure_time_map(reference_path)
+        n_pages = len(matrices)
+        pbm = _infer_page_break_measures(n_pages, self.measure_time_map)
+        max_m = max(self.measure_time_map.keys())
+        self.page_measures = []
+        for p in range(n_pages):
+            first_m = pbm[p]
+            last_m  = (pbm[p + 1] - 1) if p + 1 < len(pbm) else max_m
+            self.page_measures.append(
+                [m for m in range(first_m, last_m + 1) if m in self.measure_time_map]
+            )
+
     def process_frame(self, audio_frame: np.ndarray, sample_rate: int) -> Dict[str, Any]:
         """
         Process one audio frame and return the estimated score position.
@@ -294,18 +320,17 @@ class CYOLOModel(ScoreFollower):
                 # 2. Log-frequency spectrogram ([1, 78])
                 spec_frame = self.network.compute_spec([sig], tempo_aug=False)[0]
 
-                # 3. Page tracking via predicted position.
-                # Using the audio clock (elapsed_samples / sr) fails when the
-                # performance tempo deviates from the reference: the clock drifts
-                # and feeds the wrong page image to YOLO. Using the model's own
-                # last predicted position adapts to the actual performance speed.
-                # Pages are constrained to be monotonically non-decreasing to
-                # prevent a stray backward prediction from reverting the page.
+                # 3. Page tracking via audio clock.
+                # elapsed_samples / sr is the safe and stable page selector: it
+                # advances monotonically and cannot be derailed by a noisy YOLO
+                # prediction.  Pages only advance (never go back) to guard against
+                # floating-point rounding near a page boundary.
                 if len(self.page_timestamps) > 1:
-                    new_page = self.current_page  # default: stay
+                    elapsed_time = self.elapsed_samples / self._CYOLO_SR
+                    new_page = self.current_page
                     for i in range(len(self.page_timestamps) - 1, -1, -1):
-                        if last_pos >= self.page_timestamps[i]:
-                            new_page = max(self.current_page, i)  # only advance
+                        if elapsed_time >= self.page_timestamps[i]:
+                            new_page = max(self.current_page, i)
                             break
                     new_page = min(new_page, self.score_tensor.shape[0] - 1)
                     self.current_page = new_page
@@ -331,10 +356,10 @@ class CYOLOModel(ScoreFollower):
                     y_c         = best[1].item()  # centre y in 416-space
                     last_conf   = best[4].item()
 
-                    # 7. Convert x to time in seconds
+                    # 7. Convert x,y to time in seconds
                     pos = self._bbox_center_to_time(x_c, y_c, self.current_page)
                     if pos is None:
-                        pos = self._x_to_time(x_c, self.current_page)
+                        pos = self._x_to_time(x_c, y_c, self.current_page)
 
                     last_pos = float(pos)
 
@@ -365,24 +390,24 @@ class CYOLOModel(ScoreFollower):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _x_to_time(self, x_c: float, page_nr: int) -> float:
+    def _x_to_time(self, x_c: float, y_c: float, page_nr: int) -> float:
         """
-        Convert a predicted x coordinate (in 416-space) to seconds.
+        Convert a predicted bbox centre (x, y) in 416-space to seconds.
 
-        Applies two corrections over the naive ``x_c / 416`` approach:
+        Three-tier approach:
 
-        1. **Padding correction** — only the left ``content_width_fraction``
-           of the 416-wide canvas holds real score content (the rest is white
-           padding added to make the image square).  x is divided by
-           ``416 * content_width_fraction`` rather than 416.
+        1. **System-level mapping** (primary): use y_c to identify which staff
+           system on the page the prediction falls on, then linearly interpolate
+           x within that system's time range.  This is the key fix: on a page
+           with N systems stacked vertically, x=0.1 in system 2 maps to near
+           the *start of system 2*, not the start of the whole page.
 
-        2. **Measure-level interpolation** — uses the per-page
-           x-fraction → time interpolator built from MusicXML measure
-           timestamps, which correctly handles tempo changes and uneven note
-           density.  Falls back to page-level linear interpolation when the
-           interpolator is unavailable.
+        2. **Page-level measure interpolator** (fallback): beat-proportional
+           x-fraction → time interpolator built from MIDI downbeats; covers the
+           full page as a single band.  Used when system data is unavailable.
+
+        3. **Page-level linear** (last resort): uniform x→time across the page.
         """
-        # Correct for padding: map 416-space x into [0, 1] over content only
         cwf = (
             self.content_width_fractions[page_nr]
             if self.content_width_fractions and page_nr < len(self.content_width_fractions)
@@ -390,13 +415,38 @@ class CYOLOModel(ScoreFollower):
         )
         x_norm = float(np.clip(x_c / (self.SCALE_WIDTH * cwf), 0.0, 1.0))
 
-        # Try per-page measure interpolator first
+        # --- Tier 1: y-aware system-level interpolation ---
+        page_m = (
+            self.page_measures[page_nr]
+            if self.page_measures and page_nr < len(self.page_measures)
+            else None
+        )
+        if page_m and self.measure_time_map:
+            k      = self.measures_per_system
+            n_sys  = max(1, round(len(page_m) / k))
+            sys_id = min(n_sys - 1, int(y_c / self.SCALE_HEIGHT * n_sys))
+            sys_measures = page_m[sys_id * k : (sys_id + 1) * k]
+            if sys_measures:
+                t_start = self.measure_time_map[sys_measures[0]]
+                # End of system = start of the next measure after the last one
+                # in this system, or the start of the next page, or total duration.
+                next_m  = sys_measures[-1] + 1
+                t_end   = self.measure_time_map.get(next_m)
+                if t_end is None and page_nr + 1 < len(self.page_measures):
+                    next_page = self.page_measures[page_nr + 1]
+                    if next_page:
+                        t_end = self.measure_time_map.get(next_page[0])
+                if t_end is None:
+                    t_end = self.total_duration
+                return t_start + x_norm * (t_end - t_start)
+
+        # --- Tier 2: page-level beat-proportional measure interpolator ---
         if self.page_measure_interpolators and page_nr < len(self.page_measure_interpolators):
             interp = self.page_measure_interpolators[page_nr]
             if interp is not None:
                 return float(interp(x_norm))
 
-        # Fallback: page-level linear interpolation
+        # --- Tier 3: page-level linear fallback ---
         if self.page_timestamps:
             page_start = self.page_timestamps[page_nr]
             page_end   = (
