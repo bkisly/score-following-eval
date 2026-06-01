@@ -64,7 +64,7 @@ class TransformerModel(ScoreFollower):
     max_elapsed_deviation : int   ±frame tolerance from elapsed estimate (default c//3)
     """
 
-    _VALID_BEHIND = -24   # widened from -48: at 0.7x tempo the ring needs ~17 calls
+    _VALID_BEHIND = -96   # widened from -48: at 0.7x tempo the ring needs ~17 calls
                           # (3.2 s) to adapt from a 1x warm-up; -48 gave only 8.6 calls
                           # (1.6 s), causing correct slow-tempo predictions to be rejected
                           # before the ring could self-correct, and pushing fallback to
@@ -184,7 +184,8 @@ class TransformerModel(ScoreFollower):
         N_ref_patches = self.ref_raw_patches.shape[0] if self.ref_raw_patches is not None else 0
 
         # ── Elapsed-time tracker ──────────────────────────────────────────────
-        self._elapsed_frames += len(audio_frame) / sample_rate * self.fps
+        step_frames = len(audio_frame) / sample_rate * self.fps
+        self._elapsed_frames += step_frames
         elapsed = float(np.clip(self._elapsed_frames, 0, T_ref - 1))
 
         if not self.is_trained or self.ref_raw_patches is None:
@@ -271,7 +272,7 @@ class TransformerModel(ScoreFollower):
         # heuristic it is already equal to final_abs, making the clamp a no-op.
         _prev_abs_snapshot = self._prev_abs
 
-        raw_k = self._heuristic_decision(P_np, ctx_frame_start)
+        raw_k = self._heuristic_decision(P_np, ctx_frame_start, step_frames)
         raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
         raw_abs_frame = float(ctx_frame_start + raw_k)
 
@@ -537,7 +538,7 @@ class TransformerModel(ScoreFollower):
     # Heuristic decision  (verbatim from HeurMiTModel, Section 3.2.3)
     # =========================================================================
 
-    def _heuristic_decision(self, P_np: np.ndarray, ctx_start: int) -> int:
+    def _heuristic_decision(self, P_np: np.ndarray, ctx_start: int, step_frames: float) -> int:
         """
         Parameters
         ----------
@@ -569,7 +570,7 @@ class TransformerModel(ScoreFollower):
         smoothed = np.convolve(P_np.astype(np.float64), kernel, mode="same")
 
         raw_p     = int(np.argmax(smoothed))
-        model_k   = raw_p * self.patch_size + int(0.5 * (self.inf_w - 1))  # forward-helper
+        model_k   = raw_p * self.patch_size + int(0.75 * (self.inf_w - 1))  # forward-helper
         model_abs = ctx_start + model_k
 
         # L used for the final clip — must be in frame space, not patch space
@@ -582,15 +583,22 @@ class TransformerModel(ScoreFollower):
 
         buf = np.array(list(self._abs_pred_buf), dtype=float)
         if len(buf) >= 2:
-            xs_buf    = np.arange(len(buf), dtype=float)
-            coeffs    = np.polyfit(xs_buf, buf, 1)
-            slope     = coeffs[0]
-            buf_abs   = float(coeffs[1] + slope * len(buf))
-            exp_delta = max(1.0, abs(slope))
+            xs_buf = np.arange(len(buf), dtype=float)
+            coeffs = np.polyfit(xs_buf, buf, 1)
+            raw_slope = coeffs[0]
+
+            # THE CRITICAL FIX: Constrain slope to physically possible human tempos
+            # Minimum 0.25x tempo, Maximum 3.0x tempo
+            min_slope = 0.25 * step_frames
+            max_slope = 3.0 * step_frames
+            slope = np.clip(raw_slope, min_slope, max_slope)
+
+            buf_abs = float(coeffs[1] + slope * len(buf))
+            exp_delta = max(float(step_frames), slope)  # Use bounded slope
         else:
             buf_abs   = model_abs
             slope     = 1.0
-            exp_delta = 1.0
+            exp_delta = float(step_frames)
 
         prev  = self._prev_abs if self._prev_abs is not None else float(model_abs)
         delta = model_abs - prev

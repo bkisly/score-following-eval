@@ -44,7 +44,7 @@ def main():
     # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
     # print(f"  ✓ Created {heurMiT.name}")
 
-    PATCHFORMER_CHECKPOINT_PATH = 'patchformer-test.pth'
+    PATCHFORMER_CHECKPOINT_PATH = 'notebooks/transformer.pth'
 
     patchFormer = TransformerModel()
     if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
@@ -65,7 +65,7 @@ def main():
         audio_path=AUDIO_FILE,
         reference_path=MIDI_FILE,
         save_results=True,
-        audio_transformator=lambda a, ap: ap.time_stretch(a, 1.25)
+        audio_transformator=lambda a, ap: ap.time_stretch(a, 1)
     )
     
     print("\n" + "=" * 70)
