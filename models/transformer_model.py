@@ -276,13 +276,11 @@ class TransformerModel(ScoreFollower):
         raw_k = int(np.clip(raw_k, self.inf_w - 1, self.inf_c - 1))
         raw_abs_frame = float(ctx_frame_start + raw_k)
 
-        # ── Hard clamp: limit per-step jump, not total drift ─────────────────
-        # Use the pre-heuristic snapshot so the clamp is not a no-op, and
-        # anchor to _prev_abs rather than elapsed so cumulative tempo offset
-        # never forces the position back toward the audio clock.
-        max_dev = self._max_dev if self._max_dev is not None else self.inf_c // 3
-        prev_for_clamp = _prev_abs_snapshot if _prev_abs_snapshot is not None else elapsed
-        abs_frame = float(np.clip(raw_abs_frame, prev_for_clamp - max_dev, prev_for_clamp + max_dev))
+        # ── Dynamic Soft Tether ───────────────────────────────────────────────
+        # Kills runaway acceleration. Allows genuine tempo drift (up to 25% + 5s base)
+        # but tethers the model to the wall clock so it can never fly into infinity.
+        allowed_drift = 500.0 + (0.25 * elapsed)
+        abs_frame = float(np.clip(raw_abs_frame, elapsed - allowed_drift, elapsed + allowed_drift))
         abs_frame = float(np.clip(abs_frame, 0, T_ref - 1))
 
         # ── Output smoothing (output-only, does not affect tracking state) ───
