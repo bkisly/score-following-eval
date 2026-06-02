@@ -603,7 +603,10 @@ class TransformerModel(ScoreFollower):
 
         mono_ok  = model_abs >= prev + self._VALID_BEHIND
         range_ok = (buf_abs + self._VALID_BEHIND) <= model_abs <= (buf_abs + self._VALID_AHEAD)
-        rate_ok  = (self._RATE_LOW * exp_delta) <= abs(delta) <= (self._RATE_HIGH * exp_delta)
+        # Soft fallback constraint: Always permit small correction jumps
+        # even if rate limits are temporarily violated. Breaks deadlocks instantly.
+        rate_ok = (self._RATE_LOW * exp_delta) <= abs(delta) <= (self._RATE_HIGH * exp_delta)
+        rate_ok = rate_ok or (abs(delta) <= step_frames * 2.5)
         valid    = mono_ok and range_ok and rate_ok
 
         if valid:
