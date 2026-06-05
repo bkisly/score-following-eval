@@ -1,8 +1,3 @@
-"""
-QUICKSTART - Najprostszy możliwy przykład użycia platformy
-
-Ten skrypt pokazuje jak w 10 linijkach kodu uruchomić ewaluację modeli.
-"""
 import os
 import traceback
 
@@ -11,9 +6,6 @@ from models.otw_model import OTWModel
 from models.cyolo_model import CYOLOModel
 from models.transformer_model import TransformerModel
 from evaluation.evaluator import Evaluator
-
-# KROK 1: Ustaw ścieżki do swoich plików
-# ZMIEŃ TE ŚCIEŻKI NA SWOJE!
 
 BASE_PATH = r"C:\Users\bkisl\Desktop\maestro-v3.0.0\maestro-v3.0.0"
 
@@ -53,12 +45,10 @@ def main():
     patchFormer.load_checkpoint(PATCHFORMER_CHECKPOINT_PATH)
     print(f"  ✓ Created {patchFormer.name}")
 
-    # KROK 3: Stwórz ewaluator
     print("\n[2/3] Creating evaluator...")
     evaluator = Evaluator(tolerance_seconds=0.5)
     print("  ✓ Evaluator ready")
-    
-    # KROK 4: Uruchom porównanie
+
     print("\n[3/3] Running comparison...")
     results = evaluator.compare_all_models(
         models=[patchFormer],
@@ -80,7 +70,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # Sprawdź czy ścieżki zostały ustawione
     import sys
     
     try:
@@ -101,9 +90,5 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as e:
         print(f"\nERROR: {e}")
-        print("\nFor help, see:")
-        print("  - README.md")
-        print("  - GUIDE.md")
-        print("  - notebooks/tutorial.ipynb")
         traceback.print_exc()
         sys.exit(1)
