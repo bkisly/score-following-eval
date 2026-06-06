@@ -19,8 +19,7 @@ def main():
     print("=" * 70)
     print("QUICKSTART - Platforma Ewaluacji Śledzenia Partytury")
     print("=" * 70)
-    
-    # KROK 2: Stwórz modele
+
     # print("\n[1/3] Creating models...")
     # otw = OTWModel()
     # print(f"  ✓ Created {otw.name}")
@@ -36,7 +35,7 @@ def main():
     # heurMiT.load_checkpoint(HEURMIT_CHECKPOINT_PATH)
     # print(f"  ✓ Created {heurMiT.name}")
 
-    PATCHFORMER_CHECKPOINT_PATH = 'notebooks/transformer.pth'
+    PATCHFORMER_CHECKPOINT_PATH = './transformer.pth'
 
     patchFormer = TransformerModel()
     if not os.path.exists(PATCHFORMER_CHECKPOINT_PATH):
